@@ -35,7 +35,6 @@ async function fetchPageText(url) {
     .slice(0, 4000);
 }
 
-// 商品コレクションページから「商品名・価格・URL」だけを抽出する
 async function fetchProductList(url) {
   const res = await fetch(url);
   const html = await res.text();
@@ -55,7 +54,6 @@ async function fetchProductList(url) {
     }
   }
 
-  // 重複除去
   const unique = [...new Set(items)];
   return unique.join('\n').slice(0, 6000);
 }
@@ -83,7 +81,7 @@ async function getSiteInfo() {
 // ===== 商品情報スクレイピング =====
 let cachedProducts = null;
 let productsCacheUpdatedAt = 0;
-const PRODUCTS_CACHE_TTL = 60 * 60 * 1000; // 1時間
+const PRODUCTS_CACHE_TTL = 60 * 60 * 1000;
 
 const PRODUCT_PAGES = [
   { url: 'https://printeez.jp/collections/t-shirts',      label: 'Tシャツ' },
@@ -135,6 +133,16 @@ function needsSiteInfo(message) {
   return PRICE_KEYWORDS.some(kw => message.includes(kw));
 }
 
+// スタッフ呼び出しキーワード
+const STAFF_REQUEST_KEYWORDS = [
+  'スタッフ', '人間', '担当者', '変わって', '代わって', '繋いで', 'つないで',
+  '直接', '電話', '話したい', '聞きたい', 'オペレーター',
+];
+
+function isStaffRequest(message) {
+  return STAFF_REQUEST_KEYWORDS.some(kw => message.includes(kw));
+}
+
 // ===== システムプロンプト =====
 const BASE_SYSTEM_PROMPT = `
 あなたはPrinteez（プリントTシャツ通販）の公式LINEアシスタント「キキ」です。
@@ -142,37 +150,33 @@ const BASE_SYSTEM_PROMPT = `
 挨拶や自己紹介の時だけ🦊の絵文字を使ってください。それ以外では🦊は使わないでください。
 自己紹介を求められた場合は「PrinteezのAI、キキ🦊です！」と答えてください。
 
-マークダウン記法（**太字**など）は【絶対に必ず】使わないでください。プレーンテキストのみ。
-
 以下の情報をもとに正確に答えてください。
 わからないことや情報にないことは「詳しくはスタッフに確認しますね！」と答えてください。
 LINEなので返答は短めに。絵文字も適度に使ってください。１テキストに1-3個以内。
-マークダウン記法（**太字**など）は【絶対に必ず】使わないでください。プレーンテキストのみ。
+マークダウン記法（**太字**など）は【絶対に】使わないでください。プレーンテキストのみ。読みやすいように改行を入れてください。
 
-返答は必ず以下のJSON形式で返してください。他のテキストは一切含めないでください。
+【重要】出力ルール：
+・思考過程・内部推論・THOUGHTブロック・THINTELLブロックなど、思考に関するテキストは【絶対に】出力しないでください。
+・JSON以外のテキストを一切出力しないでください。
+・返答は必ず下記のJSON形式のみで返してください。前後に余計なテキストを付けないでください。
+
 {
   "text": "返答テキスト",
-  "quickReplies": ["選択肢1", "選択肢2", "選択肢3"]
+  "quickReplies": ["選択肢1", "選択肢2", "選択肢3", "スタッフを呼ぶ"]
 }
 
-マークダウン記法（**太字**など）は【絶対に必ず】使わないでください。プレーンテキストのみ。
-
-quickRepliesは【必ず毎回】2〜4個出してください。それ以上でも構いません。省略厳禁です。
+quickRepliesは【必ず毎回】2〜4個出してください。省略厳禁です。
 会話が終わっていない限り、どんな返答でも必ず選択肢を付けてください。
-空配列にしていいのは、ユーザーが「ありがとう」「解決しました」など
-明確に会話終了を示した時だけです。
+空配列にしていいのは、ユーザーが「ありがとう」「解決しました」など明確に会話終了を示した時だけです。
 選択肢の例：「料金を知りたい」「納期は？」「注文方法は？」「加工について」など
 Printeezに関連する次の疑問として自然なものを選んでください。
-
-マークダウン記法（**太字**など）は【絶対に必ず】使わないでください。プレーンテキストのみ。
+各選択肢は13文字以内にしてください（LINEの制限）。
 
 商品名・カテゴリが特定できた場合は、返答のtextの中に必ずURLを含めてください。
 ・特定商品が判明した場合：https://printeez.jp/products/[handle] の形式で商品ページURLを記載
 ・カテゴリが判明した場合：https://printeez.jp/collections/[カテゴリ] のURLを記載
  （例：Tシャツ→/collections/t-shirts、パーカー→/collections/hoody-sweat、スウェット→/collections/sweat、ロンT→/collections/long-t-shirts、キャップ→/collections/cap-hat、バッグ→/collections/bag-totebag）
 URLはテキスト中に自然に埋め込んでください（LINEではURLがそのままリンクになります）。
-
-マークダウン記法（**太字**など）は【絶対に必ず】使わないでください。プレーンテキストのみ。
 
 === Printeez 基本情報 ===
 
@@ -208,13 +212,145 @@ AI・PSD・PNG・JPEG・PDFなどに対応。
 ・電話対応不可
 ・領収書：アカウント画面のご注文詳細からダウンロード
 ・大口注文（数百〜数千枚）：contact@printeez.jp へ
+
+=== Printeez 定番商品・おすすめ商品 ===
+
+商品について聞かれたら下記の商品とリンクを伝えてください。
+定番やおすすめを聞かれたら必ず答えてください。
+その他のジャンルは商品ページを見て適当なものをおすすめしてください。
+
+【定番Tシャツ】
+・United Athle 5.6oz ハイクオリティTシャツ（UA-5001）
+  よれない・透けない・長持ちの代表的定番Tシャツ
+  https://printeez.jp/products/ua-5001-01
+
+・United Athle 6.2oz プレミアムTシャツ（5942-01）
+  5001より厚手・高品質。アパレル物販でよく採用
+  https://printeez.jp/products/5942-01
+
+・Printstar 5.6oz ヘビーウェイトTシャツ（00085-CVT）
+  プリント業界で最も定番の綿100%Tシャツ
+  https://printeez.jp/products/00085-cvt
+
+・Printstar 7.4oz スーパーヘビーTシャツ（00148-HVT）
+  7.4ozの厚手綿100%ヘビーウェイトTシャツ
+  https://printeez.jp/products/00148-hvt
+
+・D-FACTORY 6.6oz プレミアムコンフォートTシャツ（DF-1101）
+  透けにくくプリント適性の高い厚手ベーシックTシャツ
+  https://printeez.jp/products/df-1101
+
+・D-FACTORY 6.6oz プレミアムガーメントダイTシャツ（DF-1101D）
+  ピグメント染めでヴィンテージ感のある風合いのTシャツ
+  https://printeez.jp/products/df-1101d
+
+【定番ロングスリーブTシャツ】
+・United Athle 5.6oz ロングスリーブTシャツ（5011-01）
+  5001と同生地・袖リブ付きの定番ロンT
+  https://printeez.jp/products/5011-01
+
+・United Athle 6.2oz プレミアムロングスリーブTシャツ（5913-01）
+  6.2oz厚手・太めリブでストリート感のあるプレミアムロンT
+  https://printeez.jp/products/5913-01
+
+・Printstar 5.6oz ヘビーウェイトLS-Tシャツ（00110-CLL）
+  5.6oz綿100%・袖リブ付きの定番ロンT
+  https://printeez.jp/products/00110-cll
+
+・Printstar 7.4oz スーパーヘビー長袖Tシャツ（00149-HVL）
+  7.4oz肉厚生地・袖リブ仕様の耐久性重視ロンT
+  https://printeez.jp/products/00149-hvl
+
+・D-FACTORY 6.6oz プレミアムコンフォートロングスリーブTシャツ（DF-1102）
+  6.6oz厚手の透けにくいベーシック長袖Tシャツ
+  https://printeez.jp/products/df-1102
+
+・D-FACTORY 6.6oz プレミアムコンフォートロングスリーブTシャツ リブ付き（DF-1103）
+  6.6oz厚手・袖リブ付きのストリート系長袖Tシャツ
+  https://printeez.jp/products/df-1103
+
+【定番クルーネックスウェット】
+・United Athle 10.0oz クルーネックスウェットシャツ（5044-01）
+  10.0oz裏パイル・ダブルステッチの定番クルーネック
+  https://printeez.jp/products/5044-01
+
+・D-FACTORY 10.0oz プレミアムコンフォートクルーネックスウェット（DF-1001）
+  10.0oz度詰め裏毛・型崩れしにくいヘビーウェイトクルーネック
+  https://printeez.jp/products/df-1001
+
+・CROSS & STITCH 10.0oz レギュラーウェイトクルーネックスウェット（CS2210）
+  10.0oz裏パイル・スタンダードシルエットのベーシックスウェット
+  https://printeez.jp/products/cs2210
+
+【定番パーカー】
+・United Athle 10.0oz スウェットプルオーバーパーカー（5214-01）
+  10.0oz裏パイル・二重フードの定番プルオーバーパーカー
+  https://printeez.jp/products/5214-01
+
+・D-FACTORY 12oz プラチナプルオーバーパーカー（DF-1407）
+  12oz厚手・ベロア調裏地で保温性と高級感のあるパーカー
+  https://printeez.jp/products/df-1407
+
+・CROSS & STITCH 10.0oz レギュラーウェイトスウェットP/Oパーカー（SP2252）
+  10.0oz裏パイル・ベーシックシルエットの定番プルオーバーパーカー
+  https://printeez.jp/products/sp2252
+
+【定番キャップ・ハット】
+・NEWHATTAN コットンウォッシュドキャップ（NH-1400）
+  https://printeez.jp/products/nh-1400
+
+・FLEXFIT カフドニットビーニー（FL-1501KC）
+  https://printeez.jp/products/fl-1501kc
+
+・United Athle コットンツイルバケットハット（UA-967501）
+  https://printeez.jp/products/ua-967501
 `;
 
 // ===== 会話履歴 & スタッフ対応管理 =====
 const conversationHistory = new Map();
-const staffHandling = new Set(); // スタッフ対応中のuserId管理
 
-// ===== ローディングアニメーション（LINE API直接呼び出し）=====
+// staffHandling: Map<userId, { since: timestamp }>
+const staffHandling = new Map();
+const STAFF_TIMEOUT_MS = 60 * 60 * 1000; // 1時間でタイムアウト
+
+function isStaffMode(userId) {
+  const state = staffHandling.get(userId);
+  if (!state) return false;
+  const expired = Date.now() - state.since > STAFF_TIMEOUT_MS;
+  if (expired) {
+    staffHandling.delete(userId);
+    console.log(`[${userId}] スタッフモードがタイムアウトで解除されました`);
+    return false;
+  }
+  return true;
+}
+
+// ===== 会話要約を生成してスタッフモードへ移行 =====
+async function handoffToStaff(userId, history) {
+  // 会話履歴をテキスト化
+  const historyText = history
+    .map(h => `${h.role === 'user' ? 'お客様' : 'キキ'}: ${h.parts[0].text}`)
+    .join('\n');
+
+  // Geminiで要約生成
+  let summary = '（要約取得失敗）';
+  try {
+    const res = await ai.models.generateContent({
+      model: 'gemini-2.5-flash',
+      contents: [{ role: 'user', parts: [{ text: `以下の会話を2〜3行で要約してください。スタッフへの引き継ぎメモとして使います。敬語不要、箇条書きOK。\n\n${historyText}` }] }],
+    });
+    summary = res.text.trim().slice(0, 200);
+  } catch (e) {
+    console.error('要約生成エラー:', e.message);
+  }
+
+  // スタッフモードをオン
+  staffHandling.set(userId, { since: Date.now() });
+
+  return `スタッフにお繋ぎします！少々お待ちください🙏\n\nご要件メモ：\n${summary}`;
+}
+
+// ===== ローディングアニメーション =====
 async function showLoadingAnimation(userId, seconds = 30) {
   await fetch('https://api.line.me/v2/bot/chat/loading/start', {
     method: 'POST',
@@ -263,10 +399,16 @@ async function askGemini(userId, userMessage) {
 
   const rawText = response.text.trim();
 
-  // JSONパース（失敗時はtextのみで返す）
-  let parsed = { text: rawText, quickReplies: [] };
+  // 思考ブロック（THOUGHT / THINTELL など）を除去してからJSONパース
+  const cleaned = rawText
+    .replace(/^[\s\S]*?(THOUGHT|THINTELL|THINK|THINKING|内部推論|思考)[\s\S]*?(?=\{)/i, '')
+    .replace(/```json\s*/gi, '')
+    .replace(/```\s*/gi, '')
+    .trim();
+
+  let parsed = { text: cleaned, quickReplies: [] };
   try {
-    const jsonMatch = rawText.match(/\{[\s\S]*\}/);
+    const jsonMatch = cleaned.match(/\{[\s\S]*\}/);
     if (jsonMatch) {
       parsed = JSON.parse(jsonMatch[0]);
     }
@@ -287,7 +429,6 @@ function buildMessage(parsed) {
     text: parsed.text + '\n\n※ AIキキが返答しています',
   };
 
-  // クイックリプライがある場合は追加
   if (parsed.quickReplies && parsed.quickReplies.length > 0) {
     msg.quickReply = {
       items: parsed.quickReplies.map(label => ({
@@ -317,9 +458,9 @@ app.post('/webhook',
       const userId = event.source.userId;
       const userMessage = event.message.text;
 
-      // ===== スタッフ対応コマンド =====
+      // ===== スタッフコマンド（手動操作用）=====
       if (userMessage === '/ai-off') {
-        staffHandling.add(userId);
+        staffHandling.set(userId, { since: Date.now() });
         await client.replyMessage(event.replyToken, {
           type: 'text',
           text: '🔕 AIをオフにしました。スタッフ対応モードです。',
@@ -335,11 +476,25 @@ app.post('/webhook',
         continue;
       }
 
-      // スタッフ対応中はAIをスキップ
-      if (staffHandling.has(userId)) continue;
+      // ===== スタッフモード確認（タイムアウト自動解除あり）=====
+      if (isStaffMode(userId)) continue;
 
       try {
         await showLoadingAnimation(userId, 30);
+
+        // ===== ユーザーがスタッフ呼び出しを要求した場合 =====
+        if (isStaffRequest(userMessage)) {
+          const history = conversationHistory.get(userId) || [];
+          const handoffText = await handoffToStaff(userId, history);
+          await client.replyMessage(event.replyToken, {
+            type: 'text',
+            text: handoffText,
+          });
+          console.log(`[${userId}] スタッフモードに移行（ユーザー要求）`);
+          continue;
+        }
+
+        // ===== 通常AI応答 =====
         const parsed = await askGemini(userId, userMessage);
         await client.replyMessage(event.replyToken, buildMessage(parsed));
 
