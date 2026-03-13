@@ -540,7 +540,7 @@ Tシャツ→https://printeez.jp/collections/t-shirts
 以下の流れを丁寧に説明してください：
 
 「AIのキキ🦊です！お問い合わせありがとうございます！スタッフへの引継ぎまでサポートしますね。
-まずは、ご注文の流れをご説明しますね🥰
+まずは、ご注文の流れをご説明しますね😊
 
 ①商品を選ぶ
 　→ ご希望の商品・カラー・サイズを決めます
@@ -816,6 +816,23 @@ async function askGemini(userId, userMessage) {
 
   let systemPrompt = BASE_SYSTEM_PROMPT;
 
+  // 初回メッセージ（history が空）または全商品キャッシュ切れ → 全商品を注入
+  const isFirstMessage = history.length === 0;
+  const allProductsCacheExpired = !cachedAllProducts ||
+    (Date.now() - allProductsCacheUpdatedAt >= PRODUCTS_CACHE_TTL);
+
+  if (isFirstMessage || allProductsCacheExpired) {
+    try {
+      const allProducts = await getAllProductsWithMetafields();
+      if (allProducts) {
+        systemPrompt += `\n=== 全取扱商品情報（handle・価格・URL含む）===\n${allProducts}`;
+        console.log(`[${userId}] 全商品情報を注入（初回=${isFirstMessage} キャッシュ切れ=${allProductsCacheExpired}）`);
+      }
+    } catch (e) {
+      console.error('全商品取得エラー:', e.message);
+    }
+  }
+
   if (needsSiteInfo(userMessage)) {
     try {
       const siteInfo = await getSiteInfo();
@@ -826,11 +843,11 @@ async function askGemini(userId, userMessage) {
     }
   }
 
-  if (needsProductInfo(userMessage)) {
+  if (!isFirstMessage && needsProductInfo(userMessage)) {
     try {
       const productInfo = await getProductInfo();
-      systemPrompt += `\n=== 取扱商品情報（Shopify最新・価格含む）===\n${productInfo}`;
-      console.log(`[${userId}] 商品情報を注入`);
+      systemPrompt += `\n=== 取扱商品情報（カテゴリ別・価格含む）===\n${productInfo}`;
+      console.log(`[${userId}] 商品情報を注入（カテゴリ別）`);
     } catch (e) {
       console.error('商品取得エラー:', e.message);
     }
