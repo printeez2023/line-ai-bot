@@ -55,20 +55,19 @@ async function getSiteInfo() {
   return result;
 }
 
-
 // ===== 商品情報スクレイピング =====
 let cachedProducts = null;
 let productsCacheUpdatedAt = 0;
 const PRODUCTS_CACHE_TTL = 60 * 60 * 1000; // 1時間
 
 const PRODUCT_PAGES = [
-  { url: 'https://printeez.jp/collections/t-shirts',     label: 'Tシャツ' },
-  { url: 'https://printeez.jp/collections/sweat',        label: 'スウェット' },
-  { url: 'https://printeez.jp/collections/hoody-sweat',  label: 'パーカー' },
-  { url: 'https://printeez.jp/collections/long-t-shirts',label: 'ロンT' },
-  { url: 'https://printeez.jp/collections/polo-shirts',  label: 'ドライ/ポロシャツ' },
-  { url: 'https://printeez.jp/collections/cap-hat',      label: 'キャップ/ハット' },
-  { url: 'https://printeez.jp/collections/bag-totebag',  label: 'バッグ/トートバッグ' },
+  { url: 'https://printeez.jp/collections/t-shirts',      label: 'Tシャツ' },
+  { url: 'https://printeez.jp/collections/sweat',         label: 'スウェット' },
+  { url: 'https://printeez.jp/collections/hoody-sweat',   label: 'パーカー' },
+  { url: 'https://printeez.jp/collections/long-t-shirts', label: 'ロンT' },
+  { url: 'https://printeez.jp/collections/polo-shirts',   label: 'ドライ/ポロシャツ' },
+  { url: 'https://printeez.jp/collections/cap-hat',       label: 'キャップ/ハット' },
+  { url: 'https://printeez.jp/collections/bag-totebag',   label: 'バッグ/トートバッグ' },
 ];
 
 async function getProductInfo() {
@@ -76,7 +75,6 @@ async function getProductInfo() {
   if (cachedProducts && now - productsCacheUpdatedAt < PRODUCTS_CACHE_TTL) {
     return cachedProducts;
   }
-
   console.log('HPから商品情報を取得中...');
   let result = '';
   for (const page of PRODUCT_PAGES) {
@@ -87,7 +85,6 @@ async function getProductInfo() {
       console.error(`商品取得失敗: ${page.url}`, e.message);
     }
   }
-
   cachedProducts = result;
   productsCacheUpdatedAt = now;
   return result;
@@ -156,8 +153,7 @@ AI・PSD・PNG・JPEG・PDFなどに対応。
 
 【加工】
 ・スクリーンプリント：最大4色/箇所、発色鮮やか
-・フルカラープリント：フルカラーOK、写真・小ロット向き（インクジェットプリントはわかりにくいのでフルカラー
-プリントに変換）
+・フルカラープリント：フルカラーOK、写真・小ロット向き（インクジェットプリントはわかりにくいのでフルカラープリントに変換）
 ・刺繍：ロゴ等に対応、糸色指定可、通常5色まで、写真や1mm以下の細かい部分が含まれるデザインは対応不可。
 ・生地両面の位置合わせプリント：不可
 ・袖や、ポケット上なども可能だがスタッフによるデザイン確認必要
@@ -172,9 +168,20 @@ AI・PSD・PNG・JPEG・PDFなどに対応。
 ・大口注文（数百〜数千枚）：contact@printeez.jp へ
 `;
 
-
 // ===== 会話履歴 =====
 const conversationHistory = new Map();
+
+// ===== ローディングアニメーション（LINE API直接呼び出し）=====
+async function showLoadingAnimation(userId, seconds = 30) {
+  await fetch('https://api.line.me/v2/bot/chat/loading/start', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${process.env.LINE_CHANNEL_ACCESS_TOKEN}`,
+    },
+    body: JSON.stringify({ chatId: userId, loadingSeconds: seconds }),
+  });
+}
 
 // ===== Geminiに問い合わせる関数 =====
 async function askGemini(userId, userMessage) {
@@ -184,7 +191,7 @@ async function askGemini(userId, userMessage) {
   const history = conversationHistory.get(userId);
 
   let systemPrompt = BASE_SYSTEM_PROMPT;
-  if (needsSiteInfo(userMessage) || needsProductInfo(userMessage)) {
+  if (needsSiteInfo(userMessage)) {
     try {
       const siteInfo = await getSiteInfo();
       systemPrompt += `\n=== 公式サイト最新情報（自動取得）===\n${siteInfo}`;
@@ -234,11 +241,8 @@ async function askGemini(userId, userMessage) {
 function buildMessage(parsed) {
   const msg = {
     type: 'text',
-    text: parsed.text,
+    text: parsed.text + '\n\n※ AIキキが返答しています',
   };
-
-  // AIフッターを追加
-  msg.text = msg.text + '\n\n※ AIキキが返答しています';
 
   // クイックリプライがある場合は追加
   if (parsed.quickReplies && parsed.quickReplies.length > 0) {
@@ -247,7 +251,7 @@ function buildMessage(parsed) {
         type: 'action',
         action: {
           type: 'message',
-          label: label.slice(0, 20), // 念のため20文字でカット
+          label: label.slice(0, 20),
           text: label,
         },
       })),
@@ -271,18 +275,15 @@ app.post('/webhook',
       const userMessage = event.message.text;
 
       try {
-        
-          // 通常の質問：ローディング表示 → reply「回答＋クイックリプライ」
-          await client.showLoadingAnimation(userId, { loadingSeconds: 30 });
-          const parsed = await askGemini(userId, userMessage);
-          await client.replyMessage(event.replyToken, buildMessage(parsed));
-        
+        await showLoadingAnimation(userId, 30);
+        const parsed = await askGemini(userId, userMessage);
+        await client.replyMessage(event.replyToken, buildMessage(parsed));
 
       } catch (err) {
         console.error('エラー:', err);
         await client.replyMessage(event.replyToken, {
           type: 'text',
-          text: '申し訳ありません、少し時間をおいて再度お試しください🙏',
+          text: '申し訳ありません、少し時間をおいて再度お試しください。',
         });
       }
     }
