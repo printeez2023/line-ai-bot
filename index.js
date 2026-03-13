@@ -33,7 +33,7 @@ const conversationHistory = new Map();
 
 // ===== Geminiに問い合わせる関数 =====
 async function askGemini(userId, userMessage) {
-  const model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash' });
+  const model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash-lite' });
 
   // 会話履歴を取得（なければ初期化）
   if (!conversationHistory.has(userId)) {
