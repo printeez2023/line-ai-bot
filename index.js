@@ -108,7 +108,6 @@ let cachedProducts = null;
 let productsCacheUpdatedAt = 0;
 const PRODUCTS_CACHE_TTL = 60 * 60 * 1000;
 
-// 取得するコレクション（handle → 表示ラベル）
 const SHOPIFY_COLLECTIONS = [
   { handle: 't-shirts',      label: 'Tシャツ' },
   { handle: 'sweat',         label: 'スウェット' },
@@ -119,16 +118,14 @@ const SHOPIFY_COLLECTIONS = [
   { handle: 'bag-totebag',   label: 'バッグ/トートバッグ' },
 ];
 
-// HTMLタグを除去して説明文をプレーンテキスト化
 function stripHtml(html) {
   return (html || '')
     .replace(/<[^>]+>/g, ' ')
     .replace(/\s{2,}/g, ' ')
     .trim()
-    .slice(0, 300); // 長すぎるとトークン消費が大きいので300文字に制限
+    .slice(0, 300);
 }
 
-// コレクションIDをhandleから取得
 async function fetchCollectionId(handle) {
   const url = `https://${SHOPIFY_DOMAIN}/admin/api/${SHOPIFY_API_VERSION}/custom_collections.json?handle=${handle}`;
   const res = await fetch(url, {
@@ -138,7 +135,6 @@ async function fetchCollectionId(handle) {
   if (data.custom_collections && data.custom_collections.length > 0) {
     return data.custom_collections[0].id;
   }
-  // smart_collectionsも試す
   const url2 = `https://${SHOPIFY_DOMAIN}/admin/api/${SHOPIFY_API_VERSION}/smart_collections.json?handle=${handle}`;
   const res2 = await fetch(url2, {
     headers: { 'X-Shopify-Access-Token': SHOPIFY_ACCESS_TOKEN },
@@ -150,7 +146,6 @@ async function fetchCollectionId(handle) {
   return null;
 }
 
-// コレクション内の商品を全件取得（ページネーション対応）
 async function fetchProductsByCollectionId(collectionId) {
   const products = [];
   let url = `https://${SHOPIFY_DOMAIN}/admin/api/${SHOPIFY_API_VERSION}/products.json?collection_id=${collectionId}&limit=250&fields=id,title,handle,body_html,variants,image`;
@@ -162,7 +157,6 @@ async function fetchProductsByCollectionId(collectionId) {
     const data = await res.json();
     if (data.products) products.push(...data.products);
 
-    // ページネーション（Link headerを確認）
     const linkHeader = res.headers.get('Link');
     const nextMatch = linkHeader && linkHeader.match(/<([^>]+)>;\s*rel="next"/);
     url = nextMatch ? nextMatch[1] : null;
@@ -193,12 +187,17 @@ async function getProductInfo() {
       result += `\n=== ${col.label} ===\n`;
 
       for (const p of products) {
-        const price    = p.variants?.[0]?.price ? `¥${parseInt(p.variants[0].price).toLocaleString()}〜` : '価格不明';
+        // 最安値を取得
+        const prices = (p.variants || []).map(v => parseFloat(v.price)).filter(n => !isNaN(n));
+        const minPrice = prices.length > 0 ? Math.min(...prices) : null;
+        const priceStr = minPrice !== null ? `¥${minPrice.toLocaleString()}〜` : '価格不明';
+
         const imageUrl = p.image?.src || '';
         const desc     = stripHtml(p.body_html);
         const pageUrl  = `https://printeez.jp/products/${p.handle}`;
 
-        result += `・${p.title} ${price}\n`;
+        result += `・${p.title}\n`;
+        result += `  価格：${priceStr}\n`;
         result += `  説明：${desc}\n`;
         result += `  URL：${pageUrl}\n`;
         if (imageUrl) result += `  画像：${imageUrl}\n`;
@@ -214,21 +213,28 @@ async function getProductInfo() {
   return result;
 }
 
+// ===== キーワード判定 =====
+
+// 商品情報が必要なキーワード（価格系も含む）
 const PRODUCT_KEYWORDS = [
-  'おすすめ', 'お勧め', 'どれ', 'どんな', '商品', 'ボディ', 'Tシャツ', 'パーカー',
-  'トレーナー', 'ポロシャツ', 'タンクトップ', 'キャップ', 'バッグ', 'トートバッグ',
-  'スウェット', 'ロンT', 'ジャケット', '生地', '素材', '種類', '値段', '価格', 'いくら',
+  'おすすめ', 'お勧め', 'どれ', 'どんな', '商品', 'ボディ',
+  'Tシャツ', 'パーカー', 'トレーナー', 'ポロシャツ', 'タンクトップ',
+  'キャップ', 'バッグ', 'トートバッグ', 'スウェット', 'ロンT',
+  'ジャケット', '生地', '素材', '種類',
+  // 価格系：商品の値段を聞く場合は商品情報も必要
+  '値段', '価格', 'いくら', '円', '安い', '高い',
 ];
 function needsProductInfo(message) {
   return PRODUCT_KEYWORDS.some(kw => message.includes(kw));
 }
 
-const PRICE_KEYWORDS = [
+// サイト情報が必要なキーワード（送料・納期・割引など）
+const SITE_KEYWORDS = [
   '料金', '送料', '納期', '発送', 'いつ', '何日', '営業日', '特急',
-  '枚数', '割引', '無料', '追加料金',
+  '枚数', '割引', '無料', '追加料金', '費用',
 ];
 function needsSiteInfo(message) {
-  return PRICE_KEYWORDS.some(kw => message.includes(kw));
+  return SITE_KEYWORDS.some(kw => message.includes(kw));
 }
 
 const STAFF_REQUEST_KEYWORDS = [
@@ -250,6 +256,9 @@ const BASE_SYSTEM_PROMPT = `
 わからないことや情報にないことは「詳しくはスタッフに確認しますね！」と答えてください。
 LINEなので返答は短めに。絵文字も適度に使ってください。１テキストに1-3個以内。
 マークダウン記法（**太字**など）は【絶対に】使わないでください。プレーンテキストのみ。読みやすいように改行を入れてください。
+
+商品情報が提供された場合は、必ず価格（¥〇〇〜）をユーザーに伝えてください。
+価格を聞かれたら提供された商品情報の「価格：」の行を必ず参照してください。
 
 あなたは内部思考を持ちますが、それは絶対にユーザーに表示してはいけません。
 ユーザーに表示されるのはJSONのみです。
@@ -394,7 +403,7 @@ async function askGemini(userId, userMessage) {
   if (needsProductInfo(userMessage)) {
     try {
       const productInfo = await getProductInfo();
-      systemPrompt += `\n=== 取扱商品情報（Shopify最新）===\n${productInfo}`;
+      systemPrompt += `\n=== 取扱商品情報（Shopify最新・価格含む）===\n${productInfo}`;
       console.log(`[${userId}] 商品情報を注入`);
     } catch (e) {
       console.error('商品取得エラー:', e.message);
@@ -468,9 +477,7 @@ app.post('/webhook',
       const eventId    = event.webhookEventId;
       const replyToken = event.replyToken;
 
-      // =========================================================
       // 【最優先】スタンプ → AI復帰
-      // =========================================================
       if (event.type === 'message' && event.message.type === 'sticker') {
         aiOn(userId);
         saveEventId(eventId);
@@ -485,9 +492,7 @@ app.post('/webhook',
 
       const userMessage = event.message.text;
 
-      // =========================================================
       // 【最優先】テキストコマンド
-      // =========================================================
       if (userMessage === '/ai-off') {
         aiOff(userId);
         saveEventId(eventId);
@@ -507,12 +512,9 @@ app.post('/webhook',
         continue;
       }
 
-      // =========================================================
       // 通常ユーザーメッセージ処理
-      // =========================================================
       const user = getUser(userId);
 
-      // staffモード確認 & タイムアウト確認
       if (user.mode === 'staff') {
         const expired = Date.now() - user.staffSince > STAFF_TIMEOUT_MS;
         if (!expired) {
@@ -524,7 +526,6 @@ app.post('/webhook',
         console.log(`[${userId}] スタッフモードがタイムアウト解除 → bot復帰`);
       }
 
-      // ユーザー単位の処理ロック
       if (processingUsers.has(userId)) {
         console.log(`[${userId}] 処理中のためスキップ: ${eventId}`);
         continue;
@@ -533,7 +534,6 @@ app.post('/webhook',
       processingUsers.add(userId);
 
       try {
-        // eventId重複チェック
         if (isProcessed(eventId)) {
           console.log(`[${userId}] 重複イベントをスキップ: ${eventId}`);
           continue;
@@ -542,7 +542,6 @@ app.post('/webhook',
         saveEventId(eventId);
         await showLoadingAnimation(userId, 30);
 
-        // スタッフ呼び出し
         if (isStaffRequest(userMessage)) {
           const handoffText = await handoffToStaff(userId);
           user.lastBotReply = Date.now();
@@ -554,7 +553,6 @@ app.post('/webhook',
           continue;
         }
 
-        // Gemini呼び出し & 返信
         const parsed = await askGemini(userId, userMessage);
         await client.replyMessage(replyToken, buildMessage(parsed));
         user.lastBotReply = Date.now();
@@ -587,6 +585,19 @@ app.get('/test-shopify', async (req, res) => {
     res.json(data);
   } catch (e) {
     res.json({ error: e.message });
+  }
+});
+
+// ===== デバッグ：Geminiに渡している商品情報を確認 =====
+app.get('/debug-products', async (req, res) => {
+  try {
+    // キャッシュを強制リセットして最新を取得
+    cachedProducts = null;
+    productsCacheUpdatedAt = 0;
+    const info = await getProductInfo();
+    res.type('text/plain; charset=utf-8').send(info || '（商品情報なし）');
+  } catch (e) {
+    res.status(500).send(`エラー: ${e.message}`);
   }
 });
 
