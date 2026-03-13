@@ -177,12 +177,17 @@ app.post('/webhook',
         console.error('エラー:', err);
         await client.replyMessage(event.replyToken, {
           type: 'text',
-          text: '申し訳ありません、少し時間をおいて再度お試しください🙏',
+          text: '申し訳ありません、少し時間をおいて再度お試しください。',
         });
       }
     }
   }
 );
+
+// ===== ヘルスチェック =====
+app.get('/health', (req, res) => {
+  res.sendStatus(200);
+});
 
 // ===== サーバー起動 =====
 const PORT = process.env.PORT || 3000;
