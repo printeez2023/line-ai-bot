@@ -169,21 +169,51 @@ async function fetchProductsByCollectionId(collectionId) {
   return products;
 }
 
-// 商品のメタフィールド（カラー表・サイズチャート画像URL）を取得
+// 商品のメタフィールド画像URLをGraphQL referenceで直接取得
 async function fetchProductMetafields(productId) {
   try {
-    const url = `https://${SHOPIFY_DOMAIN}/admin/api/${SHOPIFY_API_VERSION}/products/${productId}/metafields.json?namespace=custom`;
-    const res = await fetch(url, {
-      headers: { 'X-Shopify-Access-Token': SHOPIFY_ACCESS_TOKEN },
+    const gid = `gid://shopify/Product/${productId}`;
+    const query = `{
+      product(id: "${gid}") {
+        colorChart: metafield(namespace: "custom", key: "color_chart_image") {
+          reference {
+            ... on MediaImage {
+              image { url }
+            }
+          }
+        }
+        sizeChart: metafield(namespace: "custom", key: "size_chart_image") {
+          reference {
+            ... on MediaImage {
+              image { url }
+            }
+          }
+        }
+      }
+    }`;
+
+    const res = await fetch(`https://${SHOPIFY_DOMAIN}/admin/api/${SHOPIFY_API_VERSION}/graphql.json`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Shopify-Access-Token': SHOPIFY_ACCESS_TOKEN,
+      },
+      body: JSON.stringify({ query }),
     });
     const data = await res.json();
-    const fields = data.metafields || [];
 
-    const colorField = fields.find(f => f.key === 'color_chart_image');
-    const sizeField  = fields.find(f => f.key === 'size_chart_image');
+    if (data.errors) {
+      console.error(`GraphQLエラー(${productId}):`, JSON.stringify(data.errors));
+      return { colorUrl: null, sizeUrl: null };
+    }
 
-    const colorUrl = colorField ? await resolveFileUrl(colorField.value) : null;
-    const sizeUrl  = sizeField  ? await resolveFileUrl(sizeField.value)  : null;
+    const product = data?.data?.product;
+    const colorUrl = product?.colorChart?.reference?.image?.url || null;
+    const sizeUrl  = product?.sizeChart?.reference?.image?.url  || null;
+
+    if (colorUrl || sizeUrl) {
+      console.log(`[メタフィールド取得成功] ${productId} color=${colorUrl} size=${sizeUrl}`);
+    }
 
     return { colorUrl, sizeUrl };
   } catch (e) {
@@ -192,35 +222,9 @@ async function fetchProductMetafields(productId) {
   }
 }
 
-// ShopifyファイルGID → CDN URLに解決
+// resolveFileUrl は不要になったため削除（後方互換のためスタブのみ残す）
 async function resolveFileUrl(value) {
-  if (!value) return null;
-  if (value.startsWith('https://')) return value;
-  if (value.startsWith('gid://')) {
-    try {
-      const query = `{
-        node(id: "${value}") {
-          ... on MediaImage {
-            image { url }
-          }
-        }
-      }`;
-      const res = await fetch(`https://${SHOPIFY_DOMAIN}/admin/api/${SHOPIFY_API_VERSION}/graphql.json`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'X-Shopify-Access-Token': SHOPIFY_ACCESS_TOKEN,
-        },
-        body: JSON.stringify({ query }),
-      });
-      const data = await res.json();
-      return data?.data?.node?.image?.url || null;
-    } catch (e) {
-      console.error('GID解決失敗:', e.message);
-      return null;
-    }
-  }
-  return null;
+  return value?.startsWith('https://') ? value : null;
 }
 
 function hasAvailableStock(variants) {
