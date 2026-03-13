@@ -13,10 +13,51 @@ const lineConfig = {
 const client = new line.Client(lineConfig);
 const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
 
+// ===== DB（インメモリ）=====
+//
+// users:           Map<userId, { mode, staffSince, lastBotReply }>
+// processedEvents: Set<eventId>   ← 処理済みイベントID（二重防止）
+// processingUsers: Set<userId>    ← 処理中ユーザーロック（並行処理防止）
+//
+const users = new Map();
+const processedEvents = new Set();
+const eventTimestamps = new Map();
+const processingUsers = new Set(); // ユーザー単位の処理ロック
+
+const EVENT_TTL_MS    = 10 * 60 * 1000; // eventId保持期間 10分
+const STAFF_TIMEOUT_MS = 60 * 60 * 1000; // スタッフモードタイムアウト 1時間
+
+function saveEventId(eventId) {
+  processedEvents.add(eventId);
+  eventTimestamps.set(eventId, Date.now());
+}
+
+function isProcessed(eventId) {
+  return processedEvents.has(eventId);
+}
+
+// 古いeventIdを定期クリーンアップ（メモリリーク防止）
+setInterval(() => {
+  const now = Date.now();
+  for (const [eventId, ts] of eventTimestamps) {
+    if (now - ts > EVENT_TTL_MS) {
+      processedEvents.delete(eventId);
+      eventTimestamps.delete(eventId);
+    }
+  }
+}, 5 * 60 * 1000);
+
+function getUser(userId) {
+  if (!users.has(userId)) {
+    users.set(userId, { mode: 'bot', staffSince: null, lastBotReply: null });
+  }
+  return users.get(userId);
+}
+
 // ===== HPスクレイピング =====
 let cachedSiteInfo = null;
 let cacheUpdatedAt = 0;
-const CACHE_TTL = 60 * 60 * 1000; // 1時間
+const CACHE_TTL = 60 * 60 * 1000;
 
 const SCRAPE_PAGES = [
   { url: 'https://printeez.jp/pages/about-price', label: '料金ページ' },
@@ -38,7 +79,6 @@ async function fetchPageText(url) {
 async function fetchProductList(url) {
   const res = await fetch(url);
   const html = await res.text();
-
   const items = [];
   const blocks = html.split(/(?=<h3)/);
   for (const block of blocks) {
@@ -53,16 +93,13 @@ async function fetchProductList(url) {
       }
     }
   }
-
   const unique = [...new Set(items)];
   return unique.join('\n').slice(0, 6000);
 }
 
 async function getSiteInfo() {
   const now = Date.now();
-  if (cachedSiteInfo && now - cacheUpdatedAt < CACHE_TTL) {
-    return cachedSiteInfo;
-  }
+  if (cachedSiteInfo && now - cacheUpdatedAt < CACHE_TTL) return cachedSiteInfo;
   console.log('HPから最新情報を取得中...');
   let result = '';
   for (const page of SCRAPE_PAGES) {
@@ -95,9 +132,7 @@ const PRODUCT_PAGES = [
 
 async function getProductInfo() {
   const now = Date.now();
-  if (cachedProducts && now - productsCacheUpdatedAt < PRODUCTS_CACHE_TTL) {
-    return cachedProducts;
-  }
+  if (cachedProducts && now - productsCacheUpdatedAt < PRODUCTS_CACHE_TTL) return cachedProducts;
   console.log('HPから商品情報を取得中...');
   let result = '';
   for (const page of PRODUCT_PAGES) {
@@ -118,7 +153,6 @@ const PRODUCT_KEYWORDS = [
   'トレーナー', 'ポロシャツ', 'タンクトップ', 'キャップ', 'バッグ', 'トートバッグ',
   'スウェット', 'ロンT', 'ジャケット', '生地', '素材', '種類',
 ];
-
 function needsProductInfo(message) {
   return PRODUCT_KEYWORDS.some(kw => message.includes(kw));
 }
@@ -128,17 +162,14 @@ const PRICE_KEYWORDS = [
   '納期', '発送', 'いつ', '何日', '営業日', '特急',
   '枚数', '割引', '無料', '追加料金',
 ];
-
 function needsSiteInfo(message) {
   return PRICE_KEYWORDS.some(kw => message.includes(kw));
 }
 
-// スタッフ呼び出しキーワード
 const STAFF_REQUEST_KEYWORDS = [
   'スタッフ', '人間', '担当者', '変わって', '代わって', '繋いで', 'つないで',
-  '直接', '電話', '話したい', '聞きたい', 'オペレーター',
+  '直接', '話したい', 'オペレーター',
 ];
-
 function isStaffRequest(message) {
   return STAFF_REQUEST_KEYWORDS.some(kw => message.includes(kw));
 }
@@ -155,14 +186,17 @@ const BASE_SYSTEM_PROMPT = `
 LINEなので返答は短めに。絵文字も適度に使ってください。１テキストに1-3個以内。
 マークダウン記法（**太字**など）は【絶対に】使わないでください。プレーンテキストのみ。読みやすいように改行を入れてください。
 
-【重要】出力ルール：
-・思考過程・内部推論・THOUGHTブロック・THINTELLブロックなど、思考に関するテキストは【絶対に】出力しないでください。
-・JSON以外のテキストを一切出力しないでください。
-・返答は必ず下記のJSON形式のみで返してください。前後に余計なテキストを付けないでください。
+あなたは内部思考を持ちますが、それは絶対にユーザーに表示してはいけません。
+ユーザーに表示されるのはJSONのみです。
 
+次のような思考テキストは絶対に出力してはいけません：
+THOUGHT / THINK / THINKING / THINTELL / REASONING / 内部推論 / 思考
+もしそれらを生成してしまった場合は、完全に削除してからJSONのみを出力してください。
+
+最終出力は必ず次のJSONのみです。JSON以外のテキストを絶対に出力しないでください。
 {
   "text": "返答テキスト",
-  "quickReplies": ["選択肢1", "選択肢2", "選択肢3", "スタッフを呼ぶ"]
+  "quickReplies": ["選択肢1", "選択肢2", "選択肢3"]
 }
 
 quickRepliesは【必ず毎回】2〜4個出してください。省略厳禁です。
@@ -306,46 +340,33 @@ AI・PSD・PNG・JPEG・PDFなどに対応。
   https://printeez.jp/products/ua-967501
 `;
 
-// ===== 会話履歴 & スタッフ対応管理 =====
+// ===== 会話履歴 =====
 const conversationHistory = new Map();
 
-// staffHandling: Map<userId, { since: timestamp }>
-const staffHandling = new Map();
-const STAFF_TIMEOUT_MS = 60 * 60 * 1000; // 1時間でタイムアウト
-
-function isStaffMode(userId) {
-  const state = staffHandling.get(userId);
-  if (!state) return false;
-  const expired = Date.now() - state.since > STAFF_TIMEOUT_MS;
-  if (expired) {
-    staffHandling.delete(userId);
-    console.log(`[${userId}] スタッフモードがタイムアウトで解除されました`);
-    return false;
-  }
-  return true;
-}
-
-// ===== 会話要約を生成してスタッフモードへ移行 =====
-async function handoffToStaff(userId, history) {
-  // 会話履歴をテキスト化
+// ===== 会話要約＆スタッフ引き継ぎ =====
+async function handoffToStaff(userId) {
+  const history = conversationHistory.get(userId) || [];
   const historyText = history
     .map(h => `${h.role === 'user' ? 'お客様' : 'キキ'}: ${h.parts[0].text}`)
     .join('\n');
 
-  // Geminiで要約生成
   let summary = '（要約取得失敗）';
   try {
     const res = await ai.models.generateContent({
       model: 'gemini-2.5-flash',
-      contents: [{ role: 'user', parts: [{ text: `以下の会話を2〜3行で要約してください。スタッフへの引き継ぎメモとして使います。敬語不要、箇条書きOK。\n\n${historyText}` }] }],
+      contents: [{
+        role: 'user',
+        parts: [{ text: `以下の会話を2〜3行で要約してください。スタッフへの引き継ぎメモとして使います。敬語不要、箇条書きOK。\n\n${historyText}` }],
+      }],
     });
     summary = res.text.trim().slice(0, 200);
   } catch (e) {
     console.error('要約生成エラー:', e.message);
   }
 
-  // スタッフモードをオン
-  staffHandling.set(userId, { since: Date.now() });
+  const user = getUser(userId);
+  user.mode = 'staff';
+  user.staffSince = Date.now();
 
   return `スタッフにお繋ぎします！少々お待ちください🙏\n\nご要件メモ：\n${summary}`;
 }
@@ -360,6 +381,21 @@ async function showLoadingAnimation(userId, seconds = 30) {
     },
     body: JSON.stringify({ chatId: userId, loadingSeconds: seconds }),
   });
+}
+
+// ===== 思考ブロック除去フィルタ =====
+function filterThought(rawText) {
+  return rawText
+    .replace(/```json/gi, '')
+    .replace(/```/g, '')
+    .replace(/THOUGHT[\s\S]*?\}/gi, '}')
+    .replace(/THINTELL[\s\S]*?\}/gi, '}')
+    .replace(/THINK[\s\S]*?\}/gi, '}')
+    .replace(/THINKING[\s\S]*?\}/gi, '}')
+    .replace(/REASONING[\s\S]*?\}/gi, '}')
+    .replace(/内部推論[\s\S]*?\}/gi, '}')
+    .replace(/思考[\s\S]*?\}/gi, '}')
+    .trim();
 }
 
 // ===== Geminiに問い合わせる関数 =====
@@ -394,17 +430,14 @@ async function askGemini(userId, userMessage) {
   const response = await ai.models.generateContent({
     model: 'gemini-2.5-flash',
     contents: history,
-    config: { systemInstruction: systemPrompt },
+    config: {
+      systemInstruction: systemPrompt,
+      responseMimeType: 'application/json',
+    },
   });
 
   const rawText = response.text.trim();
-
-  // 思考ブロック（THOUGHT / THINTELL など）を除去してからJSONパース
-  const cleaned = rawText
-    .replace(/^[\s\S]*?(THOUGHT|THINTELL|THINK|THINKING|内部推論|思考)[\s\S]*?(?=\{)/i, '')
-    .replace(/```json\s*/gi, '')
-    .replace(/```\s*/gi, '')
-    .trim();
+  const cleaned = filterThought(rawText);
 
   let parsed = { text: cleaned, quickReplies: [] };
   try {
@@ -414,6 +447,7 @@ async function askGemini(userId, userMessage) {
     }
   } catch (e) {
     console.error('JSONパース失敗:', e.message);
+    parsed.text = '少し問題が発生しました。もう一度お試しください🙏';
   }
 
   history.push({ role: 'model', parts: [{ text: parsed.text }] });
@@ -455,38 +489,75 @@ app.post('/webhook',
     for (const event of events) {
       if (event.type !== 'message' || event.message.type !== 'text') continue;
 
-      const userId = event.source.userId;
+      // 1. userId / eventId / replyToken 取得
+      const userId      = event.source.userId;
+      const eventId     = event.webhookEventId;
+      const replyToken  = event.replyToken;
       const userMessage = event.message.text;
+
+      // 2. DB(Map)から状態取得
+      const user = getUser(userId);
 
       // ===== スタッフコマンド（手動操作用）=====
       if (userMessage === '/ai-off') {
-        staffHandling.set(userId, { since: Date.now() });
-        await client.replyMessage(event.replyToken, {
+        user.mode = 'staff';
+        user.staffSince = Date.now();
+        saveEventId(eventId);
+        await client.replyMessage(replyToken, {
           type: 'text',
           text: '🔕 AIをオフにしました。スタッフ対応モードです。',
         });
         continue;
       }
       if (userMessage === '/ai-on') {
-        staffHandling.delete(userId);
-        await client.replyMessage(event.replyToken, {
+        user.mode = 'bot';
+        user.staffSince = null;
+        saveEventId(eventId);
+        await client.replyMessage(replyToken, {
           type: 'text',
           text: '🤖 AIキキが復帰しました！',
         });
         continue;
       }
 
-      // ===== スタッフモード確認（タイムアウト自動解除あり）=====
-      if (isStaffMode(userId)) continue;
+      // 3. staffモード確認 & タイムアウト確認
+      if (user.mode === 'staff') {
+        const expired = Date.now() - user.staffSince > STAFF_TIMEOUT_MS;
+        if (!expired) {
+          console.log(`[${userId}] スタッフモード中のためスキップ`);
+          continue;
+        }
+        // タイムアウト → botモードに自動復帰
+        user.mode = 'bot';
+        user.staffSince = null;
+        console.log(`[${userId}] スタッフモードがタイムアウト解除 → bot復帰`);
+      }
+
+      // ===== ユーザー単位の処理ロック（並行処理・二重返信防止）=====
+      if (processingUsers.has(userId)) {
+        console.log(`[${userId}] 処理中のためスキップ: ${eventId}`);
+        continue;
+      }
+
+      processingUsers.add(userId);
 
       try {
+        // 4. eventId重複チェック
+        if (isProcessed(eventId)) {
+          console.log(`[${userId}] 重複イベントをスキップ: ${eventId}`);
+          continue;
+        }
+
+        // 5. eventId保存（以降の再送をブロック）
+        saveEventId(eventId);
+
         await showLoadingAnimation(userId, 30);
 
-        // ===== ユーザーがスタッフ呼び出しを要求した場合 =====
+        // ユーザーがスタッフ呼び出しを要求した場合
         if (isStaffRequest(userMessage)) {
-          const history = conversationHistory.get(userId) || [];
-          const handoffText = await handoffToStaff(userId, history);
-          await client.replyMessage(event.replyToken, {
+          const handoffText = await handoffToStaff(userId);
+          user.lastBotReply = Date.now();
+          await client.replyMessage(replyToken, {
             type: 'text',
             text: handoffText,
           });
@@ -494,16 +565,26 @@ app.post('/webhook',
           continue;
         }
 
-        // ===== 通常AI応答 =====
+        // 6. Gemini呼び出し
         const parsed = await askGemini(userId, userMessage);
-        await client.replyMessage(event.replyToken, buildMessage(parsed));
+
+        // 7. LINE返信 & lastBotReply記録
+        await client.replyMessage(replyToken, buildMessage(parsed));
+        user.lastBotReply = Date.now();
 
       } catch (err) {
         console.error('エラー:', err);
-        await client.replyMessage(event.replyToken, {
-          type: 'text',
-          text: '申し訳ありません、少し時間をおいて再度お試しください🙏',
-        });
+        try {
+          await client.replyMessage(replyToken, {
+            type: 'text',
+            text: '申し訳ありません、少し時間をおいて再度お試しください🙏',
+          });
+        } catch (replyErr) {
+          console.error('エラー返信失敗:', replyErr.message);
+        }
+      } finally {
+        // 必ずロック解除
+        processingUsers.delete(userId);
       }
     }
   }
