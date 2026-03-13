@@ -381,35 +381,54 @@ async function fetchAndCacheMetafieldsForHandle(handle) {
 // ===== キーワード判定 =====
 
 const PRODUCT_KEYWORDS = [
+  // 日本語
   'おすすめ', 'お勧め', 'どれ', 'どんな', '商品', 'ボディ',
   'Tシャツ', 'パーカー', 'トレーナー', 'ポロシャツ', 'タンクトップ',
   'キャップ', 'バッグ', 'トートバッグ', 'スウェット', 'ロンT',
   'ジャケット', '生地', '素材', '種類',
   '値段', '価格', 'いくら', '円', '安い', '高い',
+  // English
+  'recommend', 't-shirt', 'tshirt', 'hoodie', 'sweatshirt', 'cap', 'hat',
+  'bag', 'tote', 'polo', 'jacket', 'product', 'item', 'price', 'cheap',
+  'fabric', 'material', 'color', 'colour', 'size',
 ];
 function needsProductInfo(message) {
   return PRODUCT_KEYWORDS.some(kw => message.includes(kw));
 }
 
 const SITE_KEYWORDS = [
+  // 日本語
   '料金', '送料', '納期', '発送', 'いつ', '何日', '営業日', '特急',
   '枚数', '割引', '無料', '追加料金', '費用',
   '合計', '総額', '計算', '見積', 'トータル', '全部で', 'いくらになる',
   'プリント', 'スクリーン', 'フルカラー', '刺繍', '加工',
   '注文する', '注文したい', '注文方法', 'お願いしたい', '頼みたい', '申し込み',
+  // English
+  'shipping', 'delivery', 'days', 'business day', 'express', 'rush',
+  'quantity', 'discount', 'free', 'fee', 'cost', 'total', 'quote', 'estimate',
+  'print', 'screen print', 'full color', 'embroidery', 'processing',
+  'order', 'how to order', 'place an order',
 ];
 function needsSiteInfo(message) {
   return SITE_KEYWORDS.some(kw => message.includes(kw));
 }
 
 const STAFF_REQUEST_KEYWORDS = [
+  // 日本語
   'スタッフ', '人間', '担当者', '変わって', '代わって', '繋いで', 'つないで',
   '直接', '話したい', 'オペレーター',
+  // English
+  'staff', 'human', 'person', 'agent', 'operator', 'speak to someone',
+  'talk to a person', 'real person', 'Call Staff',
 ];
 
 const REORDER_KEYWORDS = [
+  // 日本語
   '再生産', '追加注文', '追加生産', '再注文', 'また頼みたい', 'また注文',
   '同じものを', '前回と同じ', 'リピート', '追加で',
+  // English
+  'reorder', 're-order', 'order again', 'same as before', 'repeat order',
+  'additional order', 'more of the same',
 ];
 function isReorderRequest(message) {
   return REORDER_KEYWORDS.some(kw => message.includes(kw));
@@ -427,6 +446,21 @@ const BASE_SYSTEM_PROMPT = `
 狐の女の子のキャラクターで、明るく親しみやすい口調で、失礼のない敬語で話します。
 挨拶や自己紹介の時だけ🦊の絵文字を使ってください。それ以外では🦊は使わないでください。
 自己紹介を求められた場合は「PrinteezのAI、キキ🦊です！」と答えてください。
+
+=== 言語対応 ===
+ユーザーが英語でメッセージを送ってきた場合は、英語で返答してください。
+日本語でメッセージが来た場合は日本語で返答してください。
+同じ会話内で言語が変わったら、合わせて切り替えてください。
+
+英語対応時の注意：
+・自己紹介は "I'm Kiki🦊, Printeez's AI assistant!" とする
+・スタッフ引き継ぎのquickReplyラベルは "Call Staff" にする
+・AIキキ復帰のquickReplyラベルは "Call Kiki" にする
+・金額表記は "¥1,500" 形式を使う
+・見積もりには必ず "AI Estimate" という言葉を使う（「AI見積」の代わり）
+・クイックリプライのラベルは13文字以内の英語にする
+・日本語と同じ注文フロー（ステップ0〜4）をたどる
+・入稿案内では "I'll guide you on how to submit your design file." というフレーズを含める
 
 マークダウン記法（**太字**など）は【絶対に】使わないでください。プレーンテキストのみ。
 LINEなので返答は短めに。絵文字は1テキストに1〜3個以内。読みやすいよう改行を入れてください。
@@ -1347,9 +1381,14 @@ app.post('/webhook',
           // すでに awaitingNyuukou=true の場合は再セットしない（暴発防止）
           if (!user.awaitingNyuukou) {
             const NYUUKOU_TRIGGER_PHRASES = [
+              // 日本語トリガー
               'デザインデータの入稿方法についてご案内',
               'PDF・AI・PSDファイルはこのLINEから直接お送り',
               '入稿方法についてご案内します',
+              // English triggers
+              "I'll guide you on how to submit your design file",
+              'You can send PDF, AI, or PSD files directly',
+              'here is how to submit your design',
             ];
             const textTriggered = NYUUKOU_TRIGGER_PHRASES.some(t => (parsed.text || '').includes(t));
             if (parsed.nyuukouReady === true || textTriggered) {
