@@ -1,6 +1,6 @@
 const express = require('express');
 const line = require('@line/bot-sdk');
-const { GoogleGenerativeAI } = require('@google/generative-ai');
+const { GoogleGenAI } = require('@google/genai');
 
 const app = express();
 
@@ -11,9 +11,9 @@ const lineConfig = {
 };
 
 const client = new line.Client(lineConfig);
-const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
 
-// ===== システムプロンプト（ここを編集してボットの人格を変える） =====
+// ===== システムプロンプト =====
 const SYSTEM_PROMPT = `
 あなたはPrinteez（プリントTシャツ通販）の公式LINEアシスタントです。
 以下のことを丁寧かつ簡潔に答えてください。
@@ -33,29 +33,23 @@ const conversationHistory = new Map();
 
 // ===== Geminiに問い合わせる関数 =====
 async function askGemini(userId, userMessage) {
-  const model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash' });
-
-  // 会話履歴を取得（なければ初期化）
   if (!conversationHistory.has(userId)) {
     conversationHistory.set(userId, []);
   }
   const history = conversationHistory.get(userId);
 
-  // チャットセッション開始
-  const chat = model.startChat({
-    history: history,
-    systemInstruction: {
-      role: 'user',
-      parts: [{ text: SYSTEM_PROMPT }],
+  history.push({ role: 'user', parts: [{ text: userMessage }] });
+
+  const response = await ai.models.generateContent({
+    model: 'gemini-2.5-flash',
+    contents: history,
+    config: {
+      systemInstruction: SYSTEM_PROMPT,
     },
   });
 
-  // 返答を取得
-  const result = await chat.sendMessage(userMessage);
-  const reply = result.response.text();
+  const reply = response.text;
 
-  // 履歴に追加（直近10件だけ保持）
-  history.push({ role: 'user', parts: [{ text: userMessage }] });
   history.push({ role: 'model', parts: [{ text: reply }] });
   if (history.length > 20) history.splice(0, 2);
 
@@ -66,7 +60,7 @@ async function askGemini(userId, userMessage) {
 app.post('/webhook',
   line.middleware(lineConfig),
   async (req, res) => {
-    res.sendStatus(200); // LINEにすぐ200を返す
+    res.sendStatus(200);
 
     const events = req.body.events;
     for (const event of events) {
@@ -76,10 +70,6 @@ app.post('/webhook',
       const userMessage = event.message.text;
 
       try {
-        // 手動モードのユーザーはスキップ（後で実装）
-        // const isManual = await checkManualMode(userId);
-        // if (isManual) continue;
-
         const reply = await askGemini(userId, userMessage);
 
         await client.replyMessage(event.replyToken, {
