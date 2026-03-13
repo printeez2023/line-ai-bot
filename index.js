@@ -44,7 +44,10 @@ async function askGemini(userId, userMessage) {
   // チャットセッション開始
   const chat = model.startChat({
     history: history,
-    systemInstruction: SYSTEM_PROMPT,
+    systemInstruction: {
+      role: 'user',
+      parts: [{ text: SYSTEM_PROMPT }],
+    },
   });
 
   // 返答を取得
