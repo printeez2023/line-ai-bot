@@ -357,8 +357,14 @@ THOUGHT / THINK / THINKING / THINTELL / REASONING / 内部推論 / 思考
 {
   "text": "返答テキスト",
   "quickReplies": ["選択肢1", "選択肢2"],
-  "autoHandoff": false
+  "autoHandoff": false,
+  "retryWithAllProducts": false
 }
+
+商品を探したが提供された商品情報の中に見つからなかった場合は、
+"retryWithAllProducts": true にしてください。
+その場合 text は「少々お待ちください、確認してみますね！」のみにしてください。
+通常は false です。
 
 autoHandoffはステップ4が完了したと判断したときだけtrueにしてください。それ以外はfalseです。
 
@@ -684,6 +690,102 @@ function filterThought(rawText) {
     .trim();
 }
 
+// ===== all-items 全商品キャッシュ（再試行用）=====
+let cachedAllProducts = null;
+let allProductsCacheUpdatedAt = 0;
+
+async function getAllProductsWithMetafields() {
+  const now = Date.now();
+  if (cachedAllProducts && now - allProductsCacheUpdatedAt < PRODUCTS_CACHE_TTL) {
+    return cachedAllProducts;
+  }
+  console.log('all-itemsから全商品取得中...');
+
+  let result = '';
+  try {
+    const collectionId = await fetchCollectionId('all-items');
+    if (!collectionId) {
+      console.warn('all-itemsコレクションが見つかりません');
+      return '';
+    }
+
+    const products = await fetchProductsByCollectionId(collectionId);
+    for (const p of products) {
+      if (!hasAvailableStock(p.variants)) continue;
+
+      const prices = (p.variants || []).map(v => parseFloat(v.price)).filter(n => !isNaN(n));
+      const minPrice = prices.length > 0 ? Math.min(...prices) : null;
+      const priceStr = minPrice !== null ? `¥${minPrice.toLocaleString()}〜` : '価格不明';
+      const pageUrl  = `https://printeez.jp/products/${p.handle}`;
+
+      // メタフィールドはまだ取得しない（handleが確定してから取得）
+      result += `・${p.title}\n`;
+      result += `  価格：${priceStr}\n`;
+      result += `  URL：${pageUrl}\n`;
+      result += `  handle：${p.handle}\n`;
+      result += '\n';
+    }
+  } catch (e) {
+    console.error('all-items取得エラー:', e.message);
+  }
+
+  cachedAllProducts = result;
+  allProductsCacheUpdatedAt = now;
+  return result;
+}
+
+// 再試行後に見つかったhandleのメタフィールドを取得してキャッシュに追加
+async function fetchAndCacheMetafieldsForHandle(handle) {
+  if (cachedProductImages.has(handle)) return; // すでにキャッシュ済み
+  try {
+    // handleからproductIdを取得
+    const url = `https://${SHOPIFY_DOMAIN}/admin/api/${SHOPIFY_API_VERSION}/products.json?handle=${handle}&fields=id`;
+    const res = await fetch(url, {
+      headers: { 'X-Shopify-Access-Token': SHOPIFY_ACCESS_TOKEN },
+    });
+    const data = await res.json();
+    const product = data.products?.[0];
+    if (!product) return;
+
+    const { colorUrl, sizeUrl } = await fetchProductMetafields(product.id);
+    if (colorUrl || sizeUrl) {
+      cachedProductImages.set(handle, { colorUrl, sizeUrl });
+      console.log(`[メタフィールドキャッシュ追加] ${handle}`);
+    }
+  } catch (e) {
+    console.error(`handle→メタフィールド取得失敗: ${handle}`, e.message);
+  }
+}
+
+// ===== Gemini呼び出しの共通ロジック =====
+async function callGemini(history, systemPrompt) {
+  const MAX_RETRIES = 3;
+  let response;
+  for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+    try {
+      response = await ai.models.generateContent({
+        model: 'gemini-2.5-flash',
+        contents: history,
+        config: {
+          systemInstruction: systemPrompt,
+          responseMimeType: 'application/json',
+        },
+      });
+      break;
+    } catch (e) {
+      const is503 = e.message && e.message.includes('503');
+      if (is503 && attempt < MAX_RETRIES) {
+        const wait = attempt * 3000;
+        console.warn(`Gemini 503 リトライ ${attempt}/${MAX_RETRIES} (${wait}ms後)`);
+        await new Promise(r => setTimeout(r, wait));
+      } else {
+        throw e;
+      }
+    }
+  }
+  return response;
+}
+
 // ===== Geminiに問い合わせる関数 =====
 async function askGemini(userId, userMessage) {
   if (!conversationHistory.has(userId)) {
@@ -715,33 +817,13 @@ async function askGemini(userId, userMessage) {
 
   history.push({ role: 'user', parts: [{ text: userMessage }] });
 
-  // 503エラー時は最大3回リトライ（指数バックオフ）
   let response;
-  const MAX_RETRIES = 3;
-  for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
-    try {
-      response = await ai.models.generateContent({
-        model: 'gemini-2.5-flash',
-        contents: history,
-        config: {
-          systemInstruction: systemPrompt,
-          responseMimeType: 'application/json',
-        },
-      });
-      break;
-    } catch (e) {
-      const is503 = e.message && e.message.includes('503');
-      if (is503 && attempt < MAX_RETRIES) {
-        const wait = attempt * 3000;
-        console.warn(`[${userId}] Gemini 503 リトライ ${attempt}/${MAX_RETRIES} (${wait}ms後)`);
-        await new Promise(r => setTimeout(r, wait));
-      } else {
-        // 失敗確定 → historyに追加したuserMessageをロールバック
-        history.pop();
-        console.error(`[${userId}] Gemini呼び出し失敗（リトライ上限 or 503以外）:`, e.message);
-        throw e;
-      }
-    }
+  try {
+    response = await callGemini(history, systemPrompt);
+  } catch (e) {
+    history.pop();
+    console.error(`[${userId}] Gemini呼び出し失敗:`, e.message);
+    throw e;
   }
 
   const rawText = response.text.trim();
@@ -756,6 +838,54 @@ async function askGemini(userId, userMessage) {
   } catch (e) {
     console.error('JSONパース失敗:', e.message);
     parsed.text = '少し問題が発生しました。もう一度お試しください。';
+  }
+
+  // retryWithAllProducts: true → 全商品情報を注入して再試行
+  if (parsed.retryWithAllProducts === true) {
+    console.log(`[${userId}] 商品が見つからず → all-items全商品で再試行`);
+
+    // まず「確認中」メッセージをpushで先送り
+    try {
+      await client.pushMessage(userId, {
+        type: 'text',
+        text: '少々お待ちください、全商品を確認してみますね！\n\nbyAI🦊キキ',
+      });
+    } catch (e) {
+      console.error('pushMessage失敗:', e.message);
+    }
+
+    try {
+      const allProducts = await getAllProductsWithMetafields();
+      const retryPrompt = BASE_SYSTEM_PROMPT +
+        `\n=== 全取扱商品情報（完全版・handle付き）===\n${allProducts}`;
+
+      const retryResponse = await callGemini(history, retryPrompt);
+      const retryRaw     = retryResponse.text.trim();
+      const retryCleaned = filterThought(retryRaw);
+
+      let retryParsed = { text: retryCleaned, quickReplies: [] };
+      try {
+        const m = retryCleaned.match(/\{[\s\S]*\}/);
+        if (m) retryParsed = JSON.parse(m[0]);
+      } catch (e) {
+        console.error('再試行JSONパース失敗:', e.message);
+      }
+
+      // 見つかったhandleのメタフィールドをキャッシュに追加（非同期・待たない）
+      if (retryParsed.imageActions && retryParsed.imageActions.length > 0) {
+        for (const action of retryParsed.imageActions) {
+          fetchAndCacheMetafieldsForHandle(action.handle).catch(console.error);
+        }
+        // メタフィールド取得を少し待つ（最大3秒）
+        await new Promise(r => setTimeout(r, 3000));
+      }
+
+      history.push({ role: 'model', parts: [{ text: retryParsed.text }] });
+      if (history.length > 20) history.splice(0, 2);
+      return retryParsed;
+    } catch (e) {
+      console.error(`[${userId}] 全商品再試行失敗:`, e.message);
+    }
   }
 
   history.push({ role: 'model', parts: [{ text: parsed.text }] });
