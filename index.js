@@ -395,7 +395,7 @@ Tシャツ→https://printeez.jp/collections/t-shirts
 
 【納期】
 HP情報から得るが、答える内容は「現在のところ、通常は〇営業日後の発送です」という趣旨で答える
-数量や加工内容によって異なりますので、詳細をおしえてくださいと続ける
+数量や加工内容によって異なりますので、詳細をおしえてください
 
 【レイアウトイメージ】
 ・お問い合わせ経由の注文：スタッフが1〜3営業日で作成（位置・サイズ確認用）
@@ -576,7 +576,7 @@ async function askGemini(userId, userMessage) {
 function buildMessage(parsed) {
   const msg = {
     type: 'text',
-    text: parsed.text + '\n\n※ AIキキが返答しています',
+    text: parsed.text + '\n\nbyAI🦊キキ',
   };
 
   if (parsed.quickReplies && parsed.quickReplies.length > 0) {
@@ -637,7 +637,7 @@ app.post('/webhook',
           aiOn(userId);
           await client.replyMessage(replyToken, {
             type: 'text',
-            text: 'キキ🦊が戻りました！何でもお気軽にどうぞ😊',
+            text: 'キキ🦊です！また会えましたね！何でもお気軽にどうぞ😊',
           });
           continue;
         }
@@ -664,7 +664,7 @@ app.post('/webhook',
           aiOn(userId);
           await client.replyMessage(replyToken, {
             type: 'text',
-            text: 'キキ🦊が戻りました！何でもお気軽にどうぞ😊',
+            text: 'キキ🦊です！また会えましたね！何でもお気軽にどうぞ😊',
           });
           continue;
         }
