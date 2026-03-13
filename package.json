@@ -4,15 +4,11 @@
   "description": "Printeez LINE公式アカウント AIボット",
   "main": "index.js",
   "scripts": {
-    "start": "node index.js",
-    "dev": "nodemon index.js"
+    "start": "node index.js"
   },
   "dependencies": {
     "@line/bot-sdk": "^9.0.0",
-    "@google/generative-ai": "^0.21.0",
+    "@google/genai": "^0.7.0",
     "express": "^4.18.0"
-  },
-  "devDependencies": {
-    "nodemon": "^3.0.0"
   }
 }
