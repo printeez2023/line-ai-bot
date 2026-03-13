@@ -22,9 +22,9 @@ const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
 const users = new Map();
 const processedEvents = new Set();
 const eventTimestamps = new Map();
-const processingUsers = new Set(); // ユーザー単位の処理ロック
+const processingUsers = new Set();
 
-const EVENT_TTL_MS    = 10 * 60 * 1000; // eventId保持期間 10分
+const EVENT_TTL_MS     = 10 * 60 * 1000; // eventId保持期間 10分
 const STAFF_TIMEOUT_MS = 60 * 60 * 1000; // スタッフモードタイムアウト 1時間
 
 function saveEventId(eventId) {
@@ -36,7 +36,6 @@ function isProcessed(eventId) {
   return processedEvents.has(eventId);
 }
 
-// 古いeventIdを定期クリーンアップ（メモリリーク防止）
 setInterval(() => {
   const now = Date.now();
   for (const [eventId, ts] of eventTimestamps) {
@@ -52,6 +51,20 @@ function getUser(userId) {
     users.set(userId, { mode: 'bot', staffSince: null, lastBotReply: null });
   }
   return users.get(userId);
+}
+
+function aiOn(userId) {
+  const user = getUser(userId);
+  user.mode = 'bot';
+  user.staffSince = null;
+  console.log(`[${userId}] AI復帰`);
+}
+
+function aiOff(userId) {
+  const user = getUser(userId);
+  user.mode = 'staff';
+  user.staffSince = Date.now();
+  console.log(`[${userId}] スタッフモードON`);
 }
 
 // ===== HPスクレイピング =====
@@ -364,10 +377,7 @@ async function handoffToStaff(userId) {
     console.error('要約生成エラー:', e.message);
   }
 
-  const user = getUser(userId);
-  user.mode = 'staff';
-  user.staffSince = Date.now();
-
+  aiOff(userId);
   return `スタッフにお繋ぎします！少々お待ちください🙏\n\nご要件メモ：\n${summary}`;
 }
 
@@ -487,31 +497,18 @@ app.post('/webhook',
 
     const events = req.body.events;
     for (const event of events) {
-      if (event.type !== 'message' || event.message.type !== 'text') continue;
 
-      // 1. userId / eventId / replyToken 取得
-      const userId      = event.source.userId;
-      const eventId     = event.webhookEventId;
-      const replyToken  = event.replyToken;
-      const userMessage = event.message.text;
+      const userId     = event.source.userId;
+      const eventId    = event.webhookEventId;
+      const replyToken = event.replyToken;
 
-      // 2. DB(Map)から状態取得
-      const user = getUser(userId);
-
-      // ===== スタッフコマンド（手動操作用）=====
-      if (userMessage === '/ai-off') {
-        user.mode = 'staff';
-        user.staffSince = Date.now();
-        saveEventId(eventId);
-        await client.replyMessage(replyToken, {
-          type: 'text',
-          text: '🔕 AIをオフにしました。スタッフ対応モードです。',
-        });
-        continue;
-      }
-      if (userMessage === '/ai-on') {
-        user.mode = 'bot';
-        user.staffSince = null;
+      // =========================================================
+      // 【最優先】スタンプ → AI復帰
+      // ロック・staffモード・eventId重複チェックより前に処理する
+      // =========================================================
+      if (event.type === 'message' && event.message.type === 'sticker') {
+        aiOn(userId);
+        processingUsers.delete(userId); // 万一ロックが残っていても解除
         saveEventId(eventId);
         await client.replyMessage(replyToken, {
           type: 'text',
@@ -520,20 +517,56 @@ app.post('/webhook',
         continue;
       }
 
-      // 3. staffモード確認 & タイムアウト確認
+      // テキスト以外は以降の処理対象外
+      if (event.type !== 'message' || event.message.type !== 'text') continue;
+
+      const userMessage = event.message.text;
+
+      // =========================================================
+      // 【最優先】テキストコマンド
+      // ロック・staffモード・eventId重複チェックより前に処理する
+      // =========================================================
+      if (userMessage === '/ai-off') {
+        aiOff(userId);
+        processingUsers.delete(userId);
+        saveEventId(eventId);
+        await client.replyMessage(replyToken, {
+          type: 'text',
+          text: '🔕 AIをオフにしました。スタッフ対応モードです。',
+        });
+        continue;
+      }
+      if (userMessage === '/ai-on') {
+        aiOn(userId);
+        processingUsers.delete(userId);
+        saveEventId(eventId);
+        await client.replyMessage(replyToken, {
+          type: 'text',
+          text: '🤖 AIキキが復帰しました！',
+        });
+        continue;
+      }
+
+      // =========================================================
+      // 以降は通常のユーザーメッセージ処理
+      // =========================================================
+
+      // DB(Map)から状態取得
+      const user = getUser(userId);
+
+      // staffモード確認 & タイムアウト確認
       if (user.mode === 'staff') {
         const expired = Date.now() - user.staffSince > STAFF_TIMEOUT_MS;
         if (!expired) {
           console.log(`[${userId}] スタッフモード中のためスキップ`);
           continue;
         }
-        // タイムアウト → botモードに自動復帰
         user.mode = 'bot';
         user.staffSince = null;
         console.log(`[${userId}] スタッフモードがタイムアウト解除 → bot復帰`);
       }
 
-      // ===== ユーザー単位の処理ロック（並行処理・二重返信防止）=====
+      // ユーザー単位の処理ロック（並行処理・二重返信防止）
       if (processingUsers.has(userId)) {
         console.log(`[${userId}] 処理中のためスキップ: ${eventId}`);
         continue;
@@ -542,13 +575,13 @@ app.post('/webhook',
       processingUsers.add(userId);
 
       try {
-        // 4. eventId重複チェック
+        // eventId重複チェック
         if (isProcessed(eventId)) {
           console.log(`[${userId}] 重複イベントをスキップ: ${eventId}`);
           continue;
         }
 
-        // 5. eventId保存（以降の再送をブロック）
+        // eventId保存（以降の再送をブロック）
         saveEventId(eventId);
 
         await showLoadingAnimation(userId, 30);
@@ -565,10 +598,10 @@ app.post('/webhook',
           continue;
         }
 
-        // 6. Gemini呼び出し
+        // Gemini呼び出し
         const parsed = await askGemini(userId, userMessage);
 
-        // 7. LINE返信 & lastBotReply記録
+        // LINE返信 & lastBotReply記録
         await client.replyMessage(replyToken, buildMessage(parsed));
         user.lastBotReply = Date.now();
 
@@ -583,12 +616,28 @@ app.post('/webhook',
           console.error('エラー返信失敗:', replyErr.message);
         }
       } finally {
-        // 必ずロック解除
         processingUsers.delete(userId);
       }
     }
   }
 );
+// ===== Shopifyテスト =====
+app.get('/test-shopify', async (req, res) => {
+  try {
+    const response = await fetch(
+      'https://printeez-jp.myshopify.com/admin/api/2024-01/products.json?limit=3',
+      {
+        headers: {
+          'X-Shopify-Access-Token': process.env.SHOPIFY_ACCESS_TOKEN,
+        }
+      }
+    );
+    const data = await response.json();
+    res.json(data);
+  } catch (e) {
+    res.json({ error: e.message });
+  }
+});
 
 // ===== ヘルスチェック =====
 app.get('/health', (req, res) => {
