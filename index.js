@@ -928,8 +928,7 @@ async function executeHandoff(userId, replyToken) {
   // replyを先に送ってからモード変更（返信欠落防止）
   await client.replyMessage(replyToken, {
     type: 'text',
-    text: 'スタッフにお繋ぎします！少々お待ちください🙏
-ご用件がある場合は「キキを呼ぶ」とメッセージをお送りください。',
+    text: 'スタッフにお繋ぎします！少々お待ちください🙏\nご用件がある場合は「キキを呼ぶ」とメッセージをお送りください。',
   });
   user.pendingHandoff = false;
   aiOff(userId);
@@ -1481,9 +1480,7 @@ app.post('/webhook',
             // それ以外（誤送信・自由入力など）→ Gemini呼ばず、案内のみ返す
             await client.replyMessage(replyToken, {
               type: 'text',
-              text: 'このままスタッフにお繋ぎしますか？
-
-by AI🦊キキ',
+              text: 'このままスタッフにお繋ぎしますか？\n\nby AI🦊キキ',
               quickReply: {
                 items: [
                   { type: 'action', action: { type: 'message', label: 'ない', text: 'ない' } },
