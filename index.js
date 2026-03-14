@@ -4,6 +4,14 @@ const { GoogleGenAI } = require('@google/genai');
 
 const app = express();
 
+// ===== ログにタイムスタンプを追加 =====
+const _origLog   = console.log;
+const _origWarn  = console.warn;
+const _origError = console.error;
+console.log   = (...args) => _origLog(`[${new Date().toISOString()}]`, ...args);
+console.warn  = (...args) => _origWarn(`[${new Date().toISOString()}]`, ...args);
+console.error = (...args) => _origError(`[${new Date().toISOString()}]`, ...args);
+
 // ===== 設定 =====
 const lineConfig = {
   channelAccessToken: process.env.LINE_CHANNEL_ACCESS_TOKEN,
