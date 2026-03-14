@@ -17,6 +17,59 @@ const SHOPIFY_DOMAIN       = process.env.SHOPIFY_DOMAIN || 'printeez-jp.myshopif
 const SHOPIFY_ACCESS_TOKEN = process.env.SHOPIFY_ACCESS_TOKEN;
 const SHOPIFY_API_VERSION  = '2025-01';
 
+// ===== Slack設定 =====
+const SLACK_BOT_TOKEN  = process.env.SLACK_BOT_TOKEN;
+const SLACK_CHANNEL_ID = process.env.SLACK_CHANNEL_ID;
+
+async function sendToSlack(text, threadTs = null) {
+  if (!SLACK_BOT_TOKEN || !SLACK_CHANNEL_ID) return null;
+  const body = {
+    channel: SLACK_CHANNEL_ID,
+    text,
+    ...(threadTs && { thread_ts: threadTs }),
+  };
+  try {
+    const res = await fetch('https://slack.com/api/chat.postMessage', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${SLACK_BOT_TOKEN}`,
+      },
+      body: JSON.stringify(body),
+    });
+    const data = await res.json();
+    if (!data.ok) console.error('Slack送信失敗:', data.error);
+    return data;
+  } catch (e) {
+    console.error('Slack送信エラー:', e.message);
+    return null;
+  }
+}
+
+async function notifySlack(userId, summary) {
+  const user = getUser(userId);
+  const text = `🔔 *スタッフ対応リクエスト*\nLINEユーザーID: \`${userId}\`\n\n${summary}`;
+
+  if (user.slackThreadTs) {
+    // 既存スレッドに続きを投稿
+    await sendToSlack(`🔁 再度スタッフ対応リクエスト\n\n${summary}`, user.slackThreadTs);
+    console.log(`[${userId}] Slackスレッドに追記: ${user.slackThreadTs}`);
+  } else {
+    // 新規スレッド作成
+    const data = await sendToSlack(text);
+    if (data && data.ts) {
+      user.slackThreadTs = data.ts;
+      console.log(`[${userId}] Slackスレッド新規作成: ${data.ts}`);
+    }
+  }
+}
+
+async function forwardToSlack(userId, message) {
+  const user = getUser(userId);
+  if (!user.slackThreadTs) return; // スレッドがなければ転送しない
+  await sendToSlack(`👤 ${message}`, user.slackThreadTs);
+}
+
 // ===== DB（インメモリ）=====
 const users = new Map();
 const processedEvents = new Set();
@@ -51,6 +104,7 @@ function getUser(userId) {
       lastBotReply: null,
       pendingHandoff: false,
       awaitingNyuukou: false,
+      slackThreadTs: null,
     });
   }
   return users.get(userId);
@@ -932,6 +986,11 @@ async function executeHandoff(userId, replyToken) {
   });
   user.pendingHandoff = false;
   aiOff(userId);
+
+  // Slackに通知
+  const summary = await generateSummary(userId).catch(() => '（要約取得失敗）');
+  await notifySlack(userId, summary);
+
   console.log(`[${userId}] スタッフへ引き継ぎ完了`);
 }
 
@@ -1332,6 +1391,16 @@ app.post('/webhook',
             continue; // タイムアウト復帰は同一イベントには返信しない
           } else {
             console.log(`[${userId}] スタッフ対応中 → AI完全停止`);
+            // スタッフモード中はメッセージをSlackに転送
+            if (event.type === 'message') {
+              if (event.message.type === 'text') {
+                await forwardToSlack(userId, event.message.text);
+              } else if (event.message.type === 'image') {
+                await forwardToSlack(userId, '【画像を送信しました】');
+              } else if (event.message.type === 'file') {
+                await forwardToSlack(userId, `【ファイルを送信しました: ${event.message.fileName || '不明'}】`);
+              }
+            }
             continue;
           }
         }
@@ -1671,6 +1740,8 @@ app.get('/debug-estimates', (req, res) => {
 
 // ===== ヘルスチェック =====
 app.get('/health', (req, res) => {
+  const ip = req.headers['x-forwarded-for'] || req.ip;
+  console.log(`[health] ping from ${ip} at ${new Date().toISOString()}`);
   res.sendStatus(200);
 });
 
