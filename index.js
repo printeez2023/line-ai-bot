@@ -825,7 +825,10 @@ AI・PSD・PNG・JPEG・PDFなどに対応。
 ・スクリーンプリント不可
 ・DTFプリントまたは刺繍のみ対応
 
-【ワッペン・タグ】
+【ワッペン・タグの注意点】
+ワッペン→https://printeez.jp/products/wappen-001
+タグ→https://printeez.jp/products/printtag-001
+
 ・ワッペン：10個セット販売のみ（1個販売なし）
 ・ワッペン縫い付け：1か所 ¥500
 ・タグ縫い付け：¥120
