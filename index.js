@@ -1,3 +1,4 @@
+
 const express = require('express');
 const line = require('@line/bot-sdk');
 const { GoogleGenAI } = require('@google/genai');
@@ -732,8 +733,10 @@ Tシャツ→https://printeez.jp/collections/t-shirts
 ポロ・ドライ→https://printeez.jp/collections/polo-shirts
 
 エプロン・ワッペン・タグ・その他グッズ（上記カテゴリに該当しない商品）：
-→カテゴリURLは存在しません。商品データ（JSON配列）のtitleから該当する商品を検索し、商品名とURLを直接提案してください。
+→商品データ（JSON配列）のtitleから該当する商品を検索し、商品名とURLを直接提案してください。
 →例：「エプロン」と聞かれたら、titleに「エプロン」を含む商品を3〜5件リストアップしてください。
+→例：「ワッペン」と聞かれたら、titleに「ワッペン」を含む商品を3〜5件リストアップしてください。
+→例：「タグを作りたい」と聞かれたら、titleに「オリジナルタグ」を含む商品を3〜5件リストアップしてください。
 
 === Printeez 基本情報 ===
 
