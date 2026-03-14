@@ -26,13 +26,36 @@ const SHOPIFY_ACCESS_TOKEN = process.env.SHOPIFY_ACCESS_TOKEN;
 const SHOPIFY_API_VERSION  = '2025-01';
 
 // ===== Slack設定 =====
-const SLACK_BOT_TOKEN  = process.env.SLACK_BOT_TOKEN;
-const SLACK_CHANNEL_ID = process.env.SLACK_CHANNEL_ID;
+const SLACK_BOT_TOKEN     = process.env.SLACK_BOT_TOKEN;
+const SLACK_SIGNING_SECRET = process.env.SLACK_SIGNING_SECRET;
 
-async function sendToSlack(text, threadTs = null) {
-  if (!SLACK_BOT_TOKEN || !SLACK_CHANNEL_ID) return null;
+// チャンネル名に使えない文字を除去
+function sanitizeChannelName(name) {
+  return name
+    .replace(/[^\p{L}\p{N}\u3000-\u9fff\-_]/gu, '')
+    .slice(0, 50)
+    .toLowerCase() || 'unknown';
+}
+
+// LINEプロフィール取得
+async function getLineProfile(userId) {
+  try {
+    const res = await fetch(`https://api.line.me/v2/bot/profile/${userId}`, {
+      headers: { Authorization: `Bearer ${process.env.LINE_CHANNEL_ACCESS_TOKEN}` },
+    });
+    const data = await res.json();
+    return data.displayName || userId;
+  } catch (e) {
+    console.error('LINEプロフィール取得失敗:', e.message);
+    return userId;
+  }
+}
+
+// Slackにメッセージ送信
+async function sendToSlack(channelId, text, threadTs = null) {
+  if (!SLACK_BOT_TOKEN || !channelId) return null;
   const body = {
-    channel: SLACK_CHANNEL_ID,
+    channel: channelId,
     text,
     ...(threadTs && { thread_ts: threadTs }),
   };
@@ -54,17 +77,89 @@ async function sendToSlack(text, threadTs = null) {
   }
 }
 
+// 顧客ごとのSlackチャンネルを作成 or 既存を取得
+async function getOrCreateSlackChannel(userId, displayName) {
+  const channelName = `line顧客-${sanitizeChannelName(displayName)}`;
+  try {
+    // 既存チャンネル一覧から検索
+    const listRes = await fetch('https://slack.com/api/conversations.list?limit=1000', {
+      headers: { Authorization: `Bearer ${SLACK_BOT_TOKEN}` },
+    });
+    const listData = await listRes.json();
+    const existing = (listData.channels || []).find(c => c.name === channelName);
+    if (existing) {
+      console.log(`[${userId}] Slackチャンネル既存: ${channelName} (${existing.id})`);
+      return existing.id;
+    }
+
+    // 新規作成
+    const createRes = await fetch('https://slack.com/api/conversations.create', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${SLACK_BOT_TOKEN}`,
+      },
+      body: JSON.stringify({ name: channelName, is_private: false }),
+    });
+    const createData = await createRes.json();
+    if (!createData.ok) {
+      console.error('Slackチャンネル作成失敗:', createData.error);
+      return null;
+    }
+    const channelId = createData.channel.id;
+    console.log(`[${userId}] Slackチャンネル新規作成: ${channelName} (${channelId})`);
+
+    // チャンネルにBotを招待
+    await fetch('https://slack.com/api/conversations.invite', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${SLACK_BOT_TOKEN}`,
+      },
+      body: JSON.stringify({ channel: channelId, users: '' }),
+    });
+
+    // トピックにLINEユーザーIDを設定
+    await fetch('https://slack.com/api/conversations.setTopic', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${SLACK_BOT_TOKEN}`,
+      },
+      body: JSON.stringify({ channel: channelId, topic: `LINE UserID: ${userId}` }),
+    });
+
+    return channelId;
+  } catch (e) {
+    console.error('Slackチャンネル取得/作成エラー:', e.message);
+    return null;
+  }
+}
+
+// 引き継ぎ時にSlack通知
 async function notifySlack(userId, summary) {
   const user = getUser(userId);
-  const text = `🔔 *スタッフ対応リクエスト*\nLINEユーザーID: \`${userId}\`\n\n${summary}`;
+
+  // 顧客名を取得（キャッシュがあればそれを使う）
+  if (!user.displayName) {
+    user.displayName = await getLineProfile(userId);
+  }
+
+  // チャンネルを取得 or 作成
+  if (!user.slackChannelId) {
+    user.slackChannelId = await getOrCreateSlackChannel(userId, user.displayName);
+  }
+
+  const channelId = user.slackChannelId;
+  if (!channelId) return;
+
+  const text = `🔔 *スタッフ対応リクエスト*\n顧客名: *${user.displayName}*\nLINE ID: \`${userId}\`\n\n${summary}\n\n_返信は \`@LINE CS Bot メッセージ\` の形式で送ってください_`;
 
   if (user.slackThreadTs) {
-    // 既存スレッドに続きを投稿
-    await sendToSlack(`🔁 再度スタッフ対応リクエスト\n\n${summary}`, user.slackThreadTs);
-    console.log(`[${userId}] Slackスレッドに追記: ${user.slackThreadTs}`);
+    await sendToSlack(channelId, `🔁 再度スタッフ対応リクエスト\n\n${summary}`, user.slackThreadTs);
+    console.log(`[${userId}] Slackスレッドに追記`);
   } else {
-    // 新規スレッド作成
-    const data = await sendToSlack(text);
+    const data = await sendToSlack(channelId, text);
     if (data && data.ts) {
       user.slackThreadTs = data.ts;
       console.log(`[${userId}] Slackスレッド新規作成: ${data.ts}`);
@@ -72,10 +167,19 @@ async function notifySlack(userId, summary) {
   }
 }
 
+// スタッフモード中のメッセージをSlackに転送
 async function forwardToSlack(userId, message) {
   const user = getUser(userId);
-  if (!user.slackThreadTs) return; // スレッドがなければ転送しない
-  await sendToSlack(`👤 ${message}`, user.slackThreadTs);
+  if (!user.slackChannelId || !user.slackThreadTs) return;
+  await sendToSlack(user.slackChannelId, `👤 *${user.displayName || userId}*\n${message}`, user.slackThreadTs);
+}
+
+// SlackユーザーIDからLINEユーザーIDを逆引き
+function findLineUserBySlackChannel(channelId) {
+  for (const [userId, user] of users) {
+    if (user.slackChannelId === channelId) return userId;
+  }
+  return null;
 }
 
 // ===== DB（インメモリ）=====
@@ -113,6 +217,8 @@ function getUser(userId) {
       pendingHandoff: false,
       awaitingNyuukou: false,
       slackThreadTs: null,
+      slackChannelId: null,
+      displayName: null,
     });
   }
   return users.get(userId);
@@ -814,21 +920,19 @@ Tシャツ→https://printeez.jp/collections/t-shirts
 お客様から「注文する」とだけ言われたら、
 以下の流れを丁寧に説明してください：
 
-「AIのキキ🦊です！お問い合わせありがとうございます！スタッフへの引継ぎまでサポートしますね。
-まずは、ご注文の流れをご説明しますね😊
+「お問い合わせありがとうございます。
+まずはAIのキキ🦊がスタッフへの引継ぎまでサポートします。
+
+ご注文の流れをご説明しますね😊
 
 ①商品を選ぶ
-　→ ご希望の商品・カラー・サイズを決めます
 
 ②加工方法を選ぶ
-　→ スクリーンプリント / フルカラープリント / 刺繍 からお選びください
 　→この時点でキキ🦊が簡易お見積りをします
 
 ③デザインを入稿する
-　→ このLINEにPDF・AI・PSDファイルを直接送るか、
-　　 HPのアップロードページ・メールからお送りください
 
-④スタッフが確認・お見積り
+④スタッフへ引き継ぎ後、データ確認・お見積り
 　→ レイアウトイメージを1〜3営業日でご用意します
 
 ⑤ご確認・お支払い
@@ -976,8 +1080,8 @@ async function sendPreHandoffMessage(userId, replyToken, summary, triggerType) {
     text: baseText + '\n\nby AI🦊キキ',
     quickReply: {
       items: [
-        { type: 'action', action: { type: 'message', label: 'ない', text: 'ない' } },
-        { type: 'action', action: { type: 'message', label: 'ある', text: 'ある' } },
+        { type: 'action', action: { type: 'message', label: 'ない', text: '不明点はありません' } },
+        { type: 'action', action: { type: 'message', label: 'ある', text: '質問があります' } },
       ],
     },
   });
@@ -1500,8 +1604,8 @@ app.post('/webhook',
                 text: confirmText + '\n\nby AI🦊キキ',
                 quickReply: {
                   items: [
-                    { type: 'action', action: { type: 'message', label: 'ない', text: 'ない' } },
-                    { type: 'action', action: { type: 'message', label: 'ある', text: 'ある' } },
+                    { type: 'action', action: { type: 'message', label: 'ない', text: '不明点はありません' } },
+                    { type: 'action', action: { type: 'message', label: 'ある', text: '質問があります' } },
                   ],
                 },
               });
@@ -1560,8 +1664,8 @@ app.post('/webhook',
               text: 'このままスタッフにお繋ぎしますか？\n\nby AI🦊キキ',
               quickReply: {
                 items: [
-                  { type: 'action', action: { type: 'message', label: 'ない', text: 'ない' } },
-                  { type: 'action', action: { type: 'message', label: 'ある', text: 'ある' } },
+                  { type: 'action', action: { type: 'message', label: 'ない', text: 'スタッフを呼ぶ' } },
+                  { type: 'action', action: { type: 'message', label: 'ある', text: 'いいえ' } },
                 ],
               },
             });
@@ -1612,8 +1716,8 @@ app.post('/webhook',
             text: confirmText + '\n\nby AI🦊キキ',
             quickReply: {
               items: [
-                { type: 'action', action: { type: 'message', label: 'ない', text: 'ない' } },
-                { type: 'action', action: { type: 'message', label: 'ある', text: 'ある' } },
+                { type: 'action', action: { type: 'message', label: 'ない', text: '不明点はありません' } },
+                { type: 'action', action: { type: 'message', label: 'ある', text: '質問があります' } },
               ],
             },
           });
@@ -1744,6 +1848,46 @@ app.get('/debug-estimates', (req, res) => {
     out[userId] = est;
   }
   res.json(out);
+});
+
+// ===== Slack → LINE 返信エンドポイント =====
+app.post('/slack/events', express.json(), async (req, res) => {
+  const body = req.body;
+
+  // Slack URL検証（初回設定時）
+  if (body.type === 'url_verification') {
+    return res.json({ challenge: body.challenge });
+  }
+
+  res.sendStatus(200);
+
+  // app_mention イベント（@LINE CS Bot メッセージ）
+  if (body.event && body.event.type === 'app_mention') {
+    const event = body.event;
+    const channelId = event.channel;
+    const text = event.text.replace(/<@[^>]+>/g, '').trim(); // メンション部分を除去
+
+    if (!text) return;
+
+    // チャンネルIDからLINEユーザーIDを逆引き
+    const lineUserId = findLineUserBySlackChannel(channelId);
+    if (!lineUserId) {
+      console.warn(`Slackチャンネル ${channelId} に対応するLINEユーザーが見つかりません`);
+      await sendToSlack(channelId, '⚠️ 対応するLINEユーザーが見つかりません。サーバーが再起動された可能性があります。', event.thread_ts || null);
+      return;
+    }
+
+    try {
+      await client.pushMessage(lineUserId, {
+        type: 'text',
+        text,
+      });
+      console.log(`[${lineUserId}] Slack→LINE転送: ${text}`);
+    } catch (e) {
+      console.error(`LINE送信失敗:`, e.message);
+      await sendToSlack(channelId, `⚠️ LINE送信失敗: ${e.message}`, event.thread_ts || null);
+    }
+  }
 });
 
 // ===== ヘルスチェック =====
