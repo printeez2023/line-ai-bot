@@ -418,22 +418,56 @@ async function uploadLineContentToDrive(userId, messageId, fileName, mimeType) {
     const user = getUser(userId);
     const displayName = user.displayName || userId;
 
-    // 顧客フォルダ → 入稿データフォルダ
-    const customerFolderId = await getOrCreateCustomerFolder(displayName);
-    const subFolderId = await getOrCreateSubFolder(customerFolderId, '入稿データ');
-
-    // LINEからコンテンツ取得
+    // LINEからコンテンツ取得（1回だけ）
     const contentRes = await fetch(`https://api-data.line.me/v2/bot/message/${messageId}/content`, {
       headers: { Authorization: `Bearer ${process.env.LINE_CHANNEL_ACCESS_TOKEN}` },
     });
     const buffer = Buffer.from(await contentRes.arrayBuffer());
 
     // Google Driveにアップロード
+    const customerFolderId = await getOrCreateCustomerFolder(displayName);
+    const subFolderId = await getOrCreateSubFolder(customerFolderId, '入稿データ');
     const { name, link } = await uploadToDrive(subFolderId, fileName, mimeType, buffer);
+
+    // Slackにも直接アップロード（チャンネルがある場合のみ＝スタッフモードの人のみ）
+    if (user.slackChannelId) {
+      await joinChannel(user.slackChannelId);
+      await uploadFileToSlack(user.slackChannelId, buffer, name, mimeType, `👤 *${displayName}* がファイルを送信しました\n📁 Drive: ${link}`);
+    }
+
     return { name, link };
   } catch (e) {
     console.error('Google Driveアップロードエラー:', e.message);
     return null;
+  }
+}
+
+// Slackにファイルを直接アップロード
+async function uploadFileToSlack(channelId, buffer, fileName, mimeType, initialComment = '') {
+  try {
+    const { Readable } = require('stream');
+    const FormData = require('form-data');
+
+    const form = new FormData();
+    form.append('channels', channelId);
+    form.append('filename', fileName);
+    form.append('filetype', 'auto');
+    form.append('initial_comment', initialComment);
+    form.append('file', Readable.from(buffer), { filename: fileName, contentType: mimeType });
+
+    const res = await fetch('https://slack.com/api/files.upload', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${SLACK_BOT_TOKEN}`,
+        ...form.getHeaders(),
+      },
+      body: form,
+    });
+    const data = await res.json();
+    if (!data.ok) console.error('Slackファイルアップロード失敗:', data.error);
+    else console.log(`Slackファイルアップロード完了: ${fileName}`);
+  } catch (e) {
+    console.error('Slackファイルアップロードエラー:', e.message);
   }
 }
 
@@ -1765,22 +1799,13 @@ app.post('/webhook',
                 await forwardToSlack(userId, event.message.text);
               } else if (event.message.type === 'image') {
                 const messageId = event.message.id;
-                const fileName = `image_${messageId}.jpg`;
-                const result = await uploadLineContentToDrive(userId, messageId, fileName, 'image/jpeg');
-                if (result) {
-                  await forwardToSlack(userId, `📷 画像をGoogle Driveに保存しました\nファイル名: ${result.name}\n🔗 ${result.link}`);
-                } else {
-                  await forwardToSlack(userId, '【画像を送信しました（Drive保存失敗）】');
-                }
+                if (!user.displayName) user.displayName = await getLineProfile(userId);
+                await uploadLineContentToDrive(userId, messageId, `image_${messageId}.jpg`, 'image/jpeg');
               } else if (event.message.type === 'file') {
                 const messageId = event.message.id;
                 const fileName = event.message.fileName || `file_${messageId}`;
-                const result = await uploadLineContentToDrive(userId, messageId, fileName, 'application/octet-stream');
-                if (result) {
-                  await forwardToSlack(userId, `📎 ファイルをGoogle Driveに保存しました\nファイル名: ${result.name}\n🔗 ${result.link}`);
-                } else {
-                  await forwardToSlack(userId, `【ファイルを送信しました: ${fileName}（Drive保存失敗）】`);
-                }
+                if (!user.displayName) user.displayName = await getLineProfile(userId);
+                await uploadLineContentToDrive(userId, messageId, fileName, 'application/octet-stream');
               }
             }
             continue;
@@ -1815,11 +1840,15 @@ app.post('/webhook',
           continue;
         }
 
-        // ===== [修正④] 画像受信（PNG/JPEG）→ 常にpre-handoff案内 =====
+        // ===== [修正④] 画像受信（PNG/JPEG）→ Drive保存 + Slack通知 =====
         if (event.type === 'message' && event.message.type === 'image') {
           if (user.mode === 'staff') continue;
 
           await showLoadingAnimation(userId, 15);
+
+          // Drive保存 + Slackアップロード（非同期で実行、返信は待たない）
+          if (!user.displayName) user.displayName = await getLineProfile(userId);
+          uploadLineContentToDrive(userId, event.message.id, `image_${event.message.id}.jpg`, 'image/jpeg').catch(e => console.error('Drive保存エラー:', e.message));
 
           if (user.pendingHandoff) {
             await executeHandoff(userId, replyToken);
@@ -1839,11 +1868,16 @@ app.post('/webhook',
           continue;
         }
 
-        // ===== [修正④] ファイル受信（PDF/AI/PSD等）→ awaitingNyuukou中のみ入稿受付 =====
+        // ===== [修正④] ファイル受信（PDF/AI/PSD等）→ Drive保存 + awaitingNyuukou中のみ入稿受付 =====
         if (event.type === 'message' && event.message.type === 'file') {
           if (user.mode === 'staff') continue;
 
           await showLoadingAnimation(userId, 15);
+
+          // Drive保存 + Slackアップロード（非同期で実行）
+          const fileName = event.message.fileName || `file_${event.message.id}`;
+          if (!user.displayName) user.displayName = await getLineProfile(userId);
+          uploadLineContentToDrive(userId, event.message.id, fileName, 'application/octet-stream').catch(e => console.error('Drive保存エラー:', e.message));
 
           if (user.pendingHandoff) {
             await executeHandoff(userId, replyToken);
@@ -1851,13 +1885,10 @@ app.post('/webhook',
           }
 
           if (user.awaitingNyuukou) {
-            // ステップ4入稿待ち中 → 拡張子で判定
-            const fileName = event.message.fileName || '';
             const ext = fileName.split('.').pop().toLowerCase();
             const acceptedExts = ['pdf', 'ai', 'psd', 'eps', 'svg', 'tiff', 'tif'];
 
             if (acceptedExts.includes(ext) || ext === '') {
-              // 受け付けOK → 入稿完了扱いでpre-handoffへ
               console.log(`[${userId}] 入稿ファイル受信 (${fileName}) → autoHandoff開始`);
               const summary = await generateSummary(userId);
               user.awaitingNyuukou = false;
@@ -1880,7 +1911,6 @@ app.post('/webhook',
                 },
               });
             } else {
-              // PNG/JPEG等が誤って file タイプで来た場合 or 非対応形式
               await client.replyMessage(replyToken, {
                 type: 'text',
                 text: `すみません、${ext ? ext.toUpperCase() + 'ファイル' : 'このファイル'}はキキには確認できません🙏\nPDF・AI・PSDファイルをお送りいただくか、以下からご入稿ください。\n\n📧 MAIL：contact@printeez.jp\n🔗 HP：https://printeez.jp/products/ファイルアップロード用ページ\n\nby AI🦊キキ`,
@@ -1893,7 +1923,6 @@ app.post('/webhook',
               });
             }
           } else {
-            // awaitingNyuukou=false → 入稿待ちでないのでpre-handoff案内
             await client.replyMessage(replyToken, {
               type: 'text',
               text: 'すみません、ファイルの確認はキキにはできません🙏\nスタッフをお呼びしますか？\n\nby AI🦊キキ',
