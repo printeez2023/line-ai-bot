@@ -445,26 +445,43 @@ async function uploadLineContentToDrive(userId, messageId, fileName, mimeType) {
 // Slackにファイルを直接アップロード
 async function uploadFileToSlack(channelId, buffer, fileName, mimeType, initialComment = '') {
   try {
-    const { Readable } = require('stream');
-    const FormData = require('form-data');
-
-    const form = new FormData();
-    form.append('channels', channelId);
-    form.append('filename', fileName);
-    form.append('filetype', 'auto');
-    form.append('initial_comment', initialComment);
-    form.append('file', Readable.from(buffer), { filename: fileName, contentType: mimeType });
-
-    const res = await fetch('https://slack.com/api/files.upload', {
+    // Step 1: アップロードURLを取得
+    const urlRes = await fetch('https://slack.com/api/files.getUploadURLExternal', {
       method: 'POST',
       headers: {
+        'Content-Type': 'application/json',
         Authorization: `Bearer ${SLACK_BOT_TOKEN}`,
-        ...form.getHeaders(),
       },
-      body: form,
+      body: JSON.stringify({ filename: fileName, length: buffer.length }),
     });
-    const data = await res.json();
-    if (!data.ok) console.error('Slackファイルアップロード失敗:', data.error);
+    const urlData = await urlRes.json();
+    if (!urlData.ok) {
+      console.error('SlackアップロードURL取得失敗:', urlData.error);
+      return;
+    }
+
+    // Step 2: ファイルをアップロード
+    await fetch(urlData.upload_url, {
+      method: 'POST',
+      headers: { 'Content-Type': mimeType },
+      body: buffer,
+    });
+
+    // Step 3: アップロード完了してチャンネルに投稿
+    const completeRes = await fetch('https://slack.com/api/files.completeUploadExternal', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${SLACK_BOT_TOKEN}`,
+      },
+      body: JSON.stringify({
+        files: [{ id: urlData.file_id }],
+        channel_id: channelId,
+        initial_comment: initialComment,
+      }),
+    });
+    const completeData = await completeRes.json();
+    if (!completeData.ok) console.error('Slackファイルアップロード完了失敗:', completeData.error);
     else console.log(`Slackファイルアップロード完了: ${fileName}`);
   } catch (e) {
     console.error('Slackファイルアップロードエラー:', e.message);
