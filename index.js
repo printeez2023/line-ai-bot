@@ -2124,6 +2124,24 @@ app.post('/webhook',
             // スタッフモード中はメッセージをSlackに転送
             if (event.type === 'message') {
               console.log(`[${userId}] message構造:`, JSON.stringify(event.message).slice(0, 300));
+
+              // 固定返答キーワード判定（Slack転送・履歴書き込みなし）
+              if (event.message.type === 'text') {
+                const txt = event.message.text;
+                let fixedReply = null;
+                if (txt === '注文する') {
+                  fixedReply = 'ありがとうございます！ご注文の詳細をこちらに入力いただくか、詳しいご案内が必要な場合は「AIキキを呼ぶ」とお伝えくださいね。';
+                } else if (txt === '商品をみる') {
+                  fixedReply = '気になるカテゴリーはございますか？もしお探しのものが決まっていない場合は、AIキキがお買い物のお手伝いをいたします！「AIキキを呼ぶ」とお伝えくださいね。';
+                } else if (txt === 'よくある質問') {
+                  fixedReply = 'ご不明な点は、こちらのページからご確認いただけます。\nよくある質問はこちら\nhttps://printeez.jp/pages/faq\nその他の質問は「AIキキを呼ぶ」とお伝えくださいね。';
+                }
+                if (fixedReply) {
+                  await replyAndSave(replyToken, { type: 'text', text: fixedReply }, userId, user.displayName);
+                  console.log(`[${userId}] 固定返答送信: ${txt}`);
+                  continue;
+                }
+              }
               const quotedMessageId = event.message.quotedMessageId
                 || event.message.quoted?.messageId
                 || null;
