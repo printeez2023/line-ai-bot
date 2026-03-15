@@ -1,6 +1,7 @@
 const express = require('express');
 const line = require('@line/bot-sdk');
 const { GoogleGenAI } = require('@google/genai');
+const { google } = require('googleapis');
 
 const app = express();
 
@@ -302,6 +303,138 @@ function findLineUserBySlackChannel(channelId) {
     if (user.slackChannelId === channelId) return userId;
   }
   return null;
+}
+
+// ===== Google Drive =====
+const GOOGLE_DRIVE_FOLDER_ID = process.env.GOOGLE_DRIVE_FOLDER_ID;
+
+function getDriveClient() {
+  const auth = new google.auth.GoogleAuth({
+    credentials: {
+      client_email: process.env.GOOGLE_CLIENT_EMAIL,
+      private_key: (process.env.GOOGLE_PRIVATE_KEY || '').replace(/\\n/g, '\n'),
+    },
+    scopes: ['https://www.googleapis.com/auth/drive'],
+  });
+  return google.drive({ version: 'v3', auth });
+}
+
+// 顧客フォルダ（なければ作成）を取得
+async function getOrCreateCustomerFolder(displayName) {
+  const drive = getDriveClient();
+  const folderName = displayName || 'unknown';
+
+  // 既存フォルダを検索
+  const res = await drive.files.list({
+    q: `name='${folderName}' and mimeType='application/vnd.google-apps.folder' and '${GOOGLE_DRIVE_FOLDER_ID}' in parents and trashed=false`,
+    fields: 'files(id, name)',
+  });
+
+  if (res.data.files.length > 0) {
+    return res.data.files[0].id;
+  }
+
+  // 新規作成
+  const folder = await drive.files.create({
+    requestBody: {
+      name: folderName,
+      mimeType: 'application/vnd.google-apps.folder',
+      parents: [GOOGLE_DRIVE_FOLDER_ID],
+    },
+    fields: 'id',
+  });
+  console.log(`Google Driveフォルダ作成: ${folderName} (${folder.data.id})`);
+  return folder.data.id;
+}
+
+// 入稿データサブフォルダを取得 or 作成
+async function getOrCreateSubFolder(parentFolderId, subFolderName) {
+  const drive = getDriveClient();
+
+  const res = await drive.files.list({
+    q: `name='${subFolderName}' and mimeType='application/vnd.google-apps.folder' and '${parentFolderId}' in parents and trashed=false`,
+    fields: 'files(id, name)',
+  });
+
+  if (res.data.files.length > 0) {
+    return res.data.files[0].id;
+  }
+
+  const folder = await drive.files.create({
+    requestBody: {
+      name: subFolderName,
+      mimeType: 'application/vnd.google-apps.folder',
+      parents: [parentFolderId],
+    },
+    fields: 'id',
+  });
+  return folder.data.id;
+}
+
+// 同名ファイルにサフィックスをつけてアップロード
+async function uploadToDrive(folderId, fileName, mimeType, buffer) {
+  const drive = getDriveClient();
+  const { Readable } = require('stream');
+
+  // 同名ファイルを検索
+  const baseName = fileName.replace(/\.[^.]+$/, '');
+  const ext = fileName.includes('.') ? '.' + fileName.split('.').pop() : '';
+
+  const existing = await drive.files.list({
+    q: `name contains '${baseName}' and '${folderId}' in parents and trashed=false`,
+    fields: 'files(id, name)',
+  });
+
+  let finalName = fileName;
+  if (existing.data.files.length > 0) {
+    finalName = `${baseName}_${existing.data.files.length}${ext}`;
+  }
+
+  const file = await drive.files.create({
+    requestBody: {
+      name: finalName,
+      parents: [folderId],
+    },
+    media: {
+      mimeType,
+      body: Readable.from(buffer),
+    },
+    fields: 'id, webViewLink',
+  });
+
+  // 共有リンクを公開
+  await drive.permissions.create({
+    fileId: file.data.id,
+    requestBody: { role: 'reader', type: 'anyone' },
+  });
+
+  console.log(`Google Driveアップロード完了: ${finalName}`);
+  return { name: finalName, link: file.data.webViewLink };
+}
+
+// LINEのコンテンツを取得してGoogle Driveにアップロード
+async function uploadLineContentToDrive(userId, messageId, fileName, mimeType) {
+  try {
+    const user = getUser(userId);
+    const displayName = user.displayName || userId;
+
+    // 顧客フォルダ → 入稿データフォルダ
+    const customerFolderId = await getOrCreateCustomerFolder(displayName);
+    const subFolderId = await getOrCreateSubFolder(customerFolderId, '入稿データ');
+
+    // LINEからコンテンツ取得
+    const contentRes = await fetch(`https://api-data.line.me/v2/bot/message/${messageId}/content`, {
+      headers: { Authorization: `Bearer ${process.env.LINE_CHANNEL_ACCESS_TOKEN}` },
+    });
+    const buffer = Buffer.from(await contentRes.arrayBuffer());
+
+    // Google Driveにアップロード
+    const { name, link } = await uploadToDrive(subFolderId, fileName, mimeType, buffer);
+    return { name, link };
+  } catch (e) {
+    console.error('Google Driveアップロードエラー:', e.message);
+    return null;
+  }
 }
 
 // ===== DB（インメモリ）=====
@@ -1631,9 +1764,23 @@ app.post('/webhook',
               if (event.message.type === 'text') {
                 await forwardToSlack(userId, event.message.text);
               } else if (event.message.type === 'image') {
-                await forwardToSlack(userId, '【画像を送信しました】');
+                const messageId = event.message.id;
+                const fileName = `image_${messageId}.jpg`;
+                const result = await uploadLineContentToDrive(userId, messageId, fileName, 'image/jpeg');
+                if (result) {
+                  await forwardToSlack(userId, `📷 画像をGoogle Driveに保存しました\nファイル名: ${result.name}\n🔗 ${result.link}`);
+                } else {
+                  await forwardToSlack(userId, '【画像を送信しました（Drive保存失敗）】');
+                }
               } else if (event.message.type === 'file') {
-                await forwardToSlack(userId, `【ファイルを送信しました: ${event.message.fileName || '不明'}】`);
+                const messageId = event.message.id;
+                const fileName = event.message.fileName || `file_${messageId}`;
+                const result = await uploadLineContentToDrive(userId, messageId, fileName, 'application/octet-stream');
+                if (result) {
+                  await forwardToSlack(userId, `📎 ファイルをGoogle Driveに保存しました\nファイル名: ${result.name}\n🔗 ${result.link}`);
+                } else {
+                  await forwardToSlack(userId, `【ファイルを送信しました: ${fileName}（Drive保存失敗）】`);
+                }
               }
             }
             continue;
@@ -1990,25 +2137,57 @@ app.post('/slack/events', express.json(), async (req, res) => {
     const channelId = event.channel;
     const text = event.text.replace(/<@[^>]+>/g, '').trim(); // メンション部分を除去
 
-    if (!text) return;
-
     // チャンネルIDからLINEユーザーIDを逆引き
     const lineUserId = findLineUserBySlackChannel(channelId);
     if (!lineUserId) {
       console.warn(`Slackチャンネル ${channelId} に対応するLINEユーザーが見つかりません`);
-      await sendToSlack(channelId, '⚠️ 対応するLINEユーザーが見つかりません。サーバーが再起動された可能性があります。', event.thread_ts || null);
+      await sendToSlack(channelId, '⚠️ 対応するLINEユーザーが見つかりません。サーバーが再起動された可能性があります。');
       return;
     }
 
-    try {
-      await client.pushMessage(lineUserId, {
-        type: 'text',
-        text,
-      });
-      console.log(`[${lineUserId}] Slack→LINE転送: ${text}`);
-    } catch (e) {
-      console.error(`LINE送信失敗:`, e.message);
-      await sendToSlack(channelId, `⚠️ LINE送信失敗: ${e.message}`, event.thread_ts || null);
+    // 画像添付がある場合
+    if (event.files && event.files.length > 0) {
+      for (const file of event.files) {
+        if (file.mimetype && file.mimetype.startsWith('image/')) {
+          try {
+            // Slackから画像をダウンロード
+            const imgRes = await fetch(file.url_private, {
+              headers: { Authorization: `Bearer ${SLACK_BOT_TOKEN}` },
+            });
+            const buffer = Buffer.from(await imgRes.arrayBuffer());
+            const base64 = buffer.toString('base64');
+
+            // LINEに画像送信（Base64→Data URIは使えないのでimageUrlが必要）
+            // Slackのpermanent URLを使用
+            const imageUrl = file.permalink_public || file.url_private_download;
+            if (imageUrl) {
+              await client.pushMessage(lineUserId, {
+                type: 'image',
+                originalContentUrl: imageUrl,
+                previewImageUrl: imageUrl,
+              });
+              console.log(`[${lineUserId}] Slack→LINE画像転送: ${file.name}`);
+            }
+          } catch (e) {
+            console.error('Slack→LINE画像転送失敗:', e.message);
+            await sendToSlack(channelId, `⚠️ 画像転送失敗: ${e.message}`);
+          }
+        }
+      }
+    }
+
+    // テキストがある場合
+    if (text) {
+      try {
+        await client.pushMessage(lineUserId, {
+          type: 'text',
+          text,
+        });
+        console.log(`[${lineUserId}] Slack→LINE転送: ${text}`);
+      } catch (e) {
+        console.error(`LINE送信失敗:`, e.message);
+        await sendToSlack(channelId, `⚠️ LINE送信失敗: ${e.message}`);
+      }
     }
   }
 });
