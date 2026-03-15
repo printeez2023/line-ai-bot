@@ -138,6 +138,25 @@ async function getStaffMembers() {
   }
 }
 
+async function joinChannel(channelId) {
+  try {
+    const res = await fetch('https://slack.com/api/conversations.join', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${SLACK_BOT_TOKEN}`,
+      },
+      body: JSON.stringify({ channel: channelId }),
+    });
+    const data = await res.json();
+    if (!data.ok && data.error !== 'already_in_channel') {
+      console.error('チャンネル参加失敗:', data.error);
+    }
+  } catch (e) {
+    console.error('チャンネル参加エラー:', e.message);
+  }
+}
+
 async function getOrCreateSlackChannel(userId, displayName) {
   const channelName = `line顧客-${sanitizeChannelName(displayName)}`;
   try {
@@ -149,6 +168,8 @@ async function getOrCreateSlackChannel(userId, displayName) {
     const existing = (listData.channels || []).find(c => c.name === channelName);
     if (existing) {
       console.log(`[${userId}] Slackチャンネル既存: ${channelName} (${existing.id})`);
+      // 既存チャンネルにもBotが参加していることを保証
+      await joinChannel(existing.id);
       return existing.id;
     }
 
@@ -169,22 +190,22 @@ async function getOrCreateSlackChannel(userId, displayName) {
     const channelId = createData.channel.id;
     console.log(`[${userId}] Slackチャンネル新規作成: ${channelName} (${channelId})`);
 
-    // #line-顧客対応通知のスタッフメンバーを取得
-    const staffMembers = await getStaffMembers();
+    // BotがチャンネルにJoin
+    await joinChannel(channelId);
 
-    // Bot + スタッフ全員をチャンネルに招待
-    const usersToInvite = [slackBotUserId, ...staffMembers].filter(Boolean).join(',');
-    if (usersToInvite) {
+    // #line-顧客対応通知のスタッフメンバーを取得して招待（Botは除外）
+    const staffMembers = await getStaffMembers();
+    if (staffMembers.length > 0) {
       const inviteRes = await fetch('https://slack.com/api/conversations.invite', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           Authorization: `Bearer ${SLACK_BOT_TOKEN}`,
         },
-        body: JSON.stringify({ channel: channelId, users: usersToInvite }),
+        body: JSON.stringify({ channel: channelId, users: staffMembers.join(',') }),
       });
       const inviteData = await inviteRes.json();
-      if (!inviteData.ok) console.error('招待失敗:', inviteData.error);
+      if (!inviteData.ok) console.error('スタッフ招待失敗:', inviteData.error);
       else console.log(`[${userId}] スタッフ${staffMembers.length}人を招待完了`);
     }
 
