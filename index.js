@@ -1080,8 +1080,8 @@ async function sendPreHandoffMessage(userId, replyToken, summary, triggerType) {
     text: baseText + '\n\nby AI🦊キキ',
     quickReply: {
       items: [
-        { type: 'action', action: { type: 'message', label: 'ない', text: '不明点はありません' } },
-        { type: 'action', action: { type: 'message', label: 'ある', text: '質問があります' } },
+        { type: 'action', action: { type: 'message', label: '不明点はありません', text: '不明点はありません' } },
+        { type: 'action', action: { type: 'message', label: '質問があります', text: '質問があります' } },
       ],
     },
   });
@@ -1604,8 +1604,8 @@ app.post('/webhook',
                 text: confirmText + '\n\nby AI🦊キキ',
                 quickReply: {
                   items: [
-                    { type: 'action', action: { type: 'message', label: 'ない', text: '不明点はありません' } },
-                    { type: 'action', action: { type: 'message', label: 'ある', text: '質問があります' } },
+                    { type: 'action', action: { type: 'message', label: '不明点はありません', text: '不明点はありません' } },
+                    { type: 'action', action: { type: 'message', label: '質問があります', text: '質問があります' } },
                   ],
                 },
               });
@@ -1644,8 +1644,8 @@ app.post('/webhook',
 
         // pendingHandoff 中の処理（厳格化）
         if (user.pendingHandoff) {
-          const isNo  = userMessage === 'ない' || userMessage === 'No'  || userMessage === 'no';
-          const isYes = userMessage === 'ある' || userMessage === 'Yes' || userMessage === 'yes';
+          const isNo  = userMessage === 'ない' || userMessage === 'No'  || userMessage === 'no' || userMessage === '不明点はありません' || userMessage === 'スタッフを呼ぶ';
+          const isYes = userMessage === 'ある' || userMessage === 'Yes' || userMessage === 'yes' || userMessage === '質問があります' || userMessage === 'いいえ';
 
           if (isNo) {
             // 「ない」→ 即引き継ぎ
@@ -1664,8 +1664,8 @@ app.post('/webhook',
               text: 'このままスタッフにお繋ぎしますか？\n\nby AI🦊キキ',
               quickReply: {
                 items: [
-                  { type: 'action', action: { type: 'message', label: 'ない', text: 'スタッフを呼ぶ' } },
-                  { type: 'action', action: { type: 'message', label: 'ある', text: 'いいえ' } },
+                  { type: 'action', action: { type: 'message', label: 'スタッフを呼ぶ', text: 'スタッフを呼ぶ' } },
+                  { type: 'action', action: { type: 'message', label: 'いいえ', text: 'いいえ' } },
                 ],
               },
             });
@@ -1716,8 +1716,8 @@ app.post('/webhook',
             text: confirmText + '\n\nby AI🦊キキ',
             quickReply: {
               items: [
-                { type: 'action', action: { type: 'message', label: 'ない', text: '不明点はありません' } },
-                { type: 'action', action: { type: 'message', label: 'ある', text: '質問があります' } },
+                { type: 'action', action: { type: 'message', label: '不明点はありません', text: '不明点はありません' } },
+                { type: 'action', action: { type: 'message', label: '質問があります', text: '質問があります' } },
               ],
             },
           });
