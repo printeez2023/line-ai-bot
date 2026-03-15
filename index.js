@@ -2329,16 +2329,24 @@ async function uploadToShopifyCDN(buffer, fileName, mimeType) {
     console.log('ShopifyfileCreate結果:', JSON.stringify(createData?.data?.fileCreate?.files?.[0]));
 
     // ポーリングでURLが出るまで待つ（最大15秒）
-    const pollQuery = `
+    const isImage = mimeType.startsWith('image/');
+    const pollQuery = isImage ? `
       query getFile($id: ID!) {
         node(id: $id) {
           ... on MediaImage {
             image { url }
             status
           }
-          ... on GenericFile {
-            url
-            status
+        }
+      }
+    ` : `
+      query getFile($query: String!) {
+        files(first: 1, query: $query) {
+          nodes {
+            ... on GenericFile {
+              url
+              fileStatus
+            }
           }
         }
       }
@@ -2348,17 +2356,25 @@ async function uploadToShopifyCDN(buffer, fileName, mimeType) {
       await new Promise(r => setTimeout(r, 3000));
       if (!fileId) break;
 
+      const pollVariables = isImage
+        ? { id: fileId }
+        : { query: `id:${fileId.split('/').pop()}` };
+
       const pollRes = await fetch(`https://${SHOPIFY_DOMAIN}/admin/api/${SHOPIFY_API_VERSION}/graphql.json`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           'X-Shopify-Access-Token': SHOPIFY_ACCESS_TOKEN,
         },
-        body: JSON.stringify({ query: pollQuery, variables: { id: fileId } }),
+        body: JSON.stringify({ query: pollQuery, variables: pollVariables }),
       });
       const pollData = await pollRes.json();
-      const url = pollData?.data?.node?.image?.url || pollData?.data?.node?.url;
-      const status = pollData?.data?.node?.status;
+      const url = isImage
+        ? pollData?.data?.node?.image?.url
+        : pollData?.data?.files?.nodes?.[0]?.url;
+      const status = isImage
+        ? pollData?.data?.node?.status
+        : pollData?.data?.files?.nodes?.[0]?.fileStatus;
       console.log(`ShopifyポーリングURL: ${url} status: ${status}`);
       if (url) {
         console.log(`ShopifyCDNアップロード完了: ${url}`);
