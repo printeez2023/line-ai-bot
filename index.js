@@ -1903,7 +1903,7 @@ async function askGemini(userId, userMessage) {
     }
   }
 
-  history.push({ role: 'user', parts: [{ text: userMessage }] });
+  history.push({ role: 'user', parts: [{ text: geminiMessage }] });
 
   let response;
   try {
@@ -2283,18 +2283,20 @@ app.post('/webhook',
         // テキストをMapに保存
         messageTextMap.set(event.message.id, userMessage);
         const quotedMsgId = event.message.quotedMessageId || event.message.quoted?.messageId || null;
-        // リプライ内容解決は非同期でバックグラウンド処理（AIの返答をブロックしない）
-        const msgIdForHistory = event.message.id;
+
+        // リプライ内容を解決してGeminiに渡すメッセージを構築
+        let geminiMessage = userMessage;
+        let replyContent = '';
         if (quotedMsgId) {
-          resolveQuotedMessage(userId, quotedMsgId).then(quoted => {
-            const replyContent = quoted?.value || '（内容不明）';
-            queueHistoryWrite(userId, user.displayName, msgIdForHistory, quotedMsgId, 'user', userMessage, '', replyContent);
-          }).catch(() => {
-            queueHistoryWrite(userId, user.displayName, msgIdForHistory, quotedMsgId, 'user', userMessage);
-          });
-        } else {
-          queueHistoryWrite(userId, user.displayName, msgIdForHistory, null, 'user', userMessage);
+          const quoted = await resolveQuotedMessage(userId, quotedMsgId);
+          replyContent = quoted?.value || '';
+          if (replyContent) {
+            geminiMessage = `（返信先：「${replyContent.slice(0, 100)}」）\n${userMessage}`;
+          }
         }
+
+        // 履歴キューはバックグラウンドで追加
+        queueHistoryWrite(userId, user.displayName, event.message.id, quotedMsgId, 'user', userMessage, '', replyContent || '');
 
         // pendingHandoff 中の処理（厳格化）
         if (user.pendingHandoff) {
