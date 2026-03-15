@@ -2771,7 +2771,58 @@ app.get('/health', (req, res) => {
 
 // ===== サーバー起動 =====
 const PORT = process.env.PORT || 3000;
+
+// 起動時履歴復元（直近の履歴をメモリに展開）
+async function restoreHistoryOnStartup() {
+  try {
+    const sheets = getSheetsClient();
+
+    // INDEXを全件読み込み
+    const idxRes = await sheets.spreadsheets.values.get({
+      spreadsheetId: LINE_HISTORY_INDEX_ID,
+      range: 'シート1!A:D',
+    });
+    const rows = (idxRes.data.values || []).filter(r => r[0] && r[0] !== 'userId');
+
+    // sheetIdごとにユニーク化してキャッシュ
+    const sheetIds = new Set();
+    for (const row of rows) {
+      const [userId, displayName, sheetId] = row;
+      if (!historyIndexCache.has(userId)) {
+        historyIndexCache.set(userId, { sheetId, displayName });
+      }
+      sheetIds.add(sheetId);
+    }
+    console.log(`INDEX復元: ${rows.length}顧客`);
+
+    // 各シートの直近100件をメモリに展開
+    for (const sheetId of sheetIds) {
+      try {
+        const logRes = await sheets.spreadsheets.values.get({
+          spreadsheetId: sheetId,
+          range: 'LOG!A:I',
+        });
+        const logRows = (logRes.data.values || []).slice(1); // ヘッダー除外
+        const recent = logRows.slice(-100);
+
+        for (const r of recent) {
+          const [, userId, , messageId, , role, content, fileUrl] = r;
+          if (!messageId) continue;
+          if (fileUrl) messageUrlMap.set(messageId, fileUrl);
+          if (content) messageTextMap.set(messageId, content);
+        }
+      } catch (e) {
+        console.error(`シート復元エラー(${sheetId}):`, e.message);
+      }
+    }
+    console.log(`履歴復元完了: messageMap=${messageTextMap.size}件 urlMap=${messageUrlMap.size}件`);
+  } catch (e) {
+    console.error('起動時履歴復元エラー:', e.message);
+  }
+}
+
 app.listen(PORT, () => {
   console.log(`サーバー起動中: port ${PORT}`);
   joinStaffChannel();
+  restoreHistoryOnStartup();
 });
