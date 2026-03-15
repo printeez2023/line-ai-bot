@@ -1396,6 +1396,34 @@ async function generateSummary(userId) {
 }
 
 // ===== pre-handoff メッセージを送り、pendingHandoff 状態にする =====
+// ===== LINEメッセージ送信ラッパー（送信したメッセージIDをMapに保存）=====
+async function replyAndSave(replyToken, messages) {
+  const msgArray = Array.isArray(messages) ? messages : [messages];
+  const res = await client.replyMessage({ replyToken, messages: msgArray });
+  // sentMessagesのIDとテキストをMapに保存
+  if (res?.sentMessages) {
+    res.sentMessages.forEach((sent, i) => {
+      if (sent.id && msgArray[i]?.text) {
+        messageTextMap.set(sent.id, msgArray[i].text);
+      }
+    });
+  }
+  return res;
+}
+
+async function pushAndSave(userId, messages) {
+  const msgArray = Array.isArray(messages) ? messages : [messages];
+  const res = await client.pushMessage({ to: userId, messages: msgArray });
+  if (res?.sentMessages) {
+    res.sentMessages.forEach((sent, i) => {
+      if (sent.id && msgArray[i]?.text) {
+        messageTextMap.set(sent.id, msgArray[i].text);
+      }
+    });
+  }
+  return res;
+}
+
 async function sendPreHandoffMessage(userId, replyToken, summary, triggerType) {
   const user = getUser(userId);
   user.pendingHandoff = true;
@@ -1660,7 +1688,7 @@ async function askGemini(userId, userMessage) {
     console.log(`[${userId}] 商品が見つからず → 全商品のみで再試行（カテゴリ注入なし）`);
 
     try {
-      await client.pushMessage(userId, {
+      await pushAndSave(userId, {
         type: 'text',
         text: '少々お待ちください、全商品を確認してみますね！\n\nby AI🦊キキ',
       });
@@ -2003,7 +2031,7 @@ app.post('/webhook',
             user.pendingHandoff = false;
             await showLoadingAnimation(userId, 30);
             const parsed = await askGemini(userId, userMessage);
-            await client.replyMessage(replyToken, buildMessages(parsed));
+            const _msgs = buildMessages(parsed); const _res = await replyAndSave(replyToken, _msgs); 
             user.lastBotReply = Date.now();
           } else {
             // それ以外（誤送信・自由入力など）→ Gemini呼ばず、案内のみ返す
@@ -2091,7 +2119,7 @@ app.post('/webhook',
               console.log(`[${userId}] 入稿待ち状態にセット（AIフラグ=${parsed.nyuukouReady} テキスト=${textTriggered}）`);
             }
           }
-          await client.replyMessage(replyToken, buildMessages(parsed));
+          const _msgs = buildMessages(parsed); const _res = await replyAndSave(replyToken, _msgs); 
           user.lastBotReply = Date.now();
         }
 
