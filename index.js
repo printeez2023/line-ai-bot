@@ -2186,9 +2186,8 @@ async function uploadToShopifyCDN(buffer, fileName, mimeType) {
     const variables = {
       files: [{
         filename: fileName,
-        mimeType,
-        resource: 'IMAGE',
         originalSource: `data:${mimeType};base64,${base64}`,
+        contentType: 'IMAGE',
       }],
     };
 
