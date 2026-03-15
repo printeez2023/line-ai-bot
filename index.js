@@ -462,7 +462,7 @@ async function registerCustomer(userId, displayName) {
       // ヘッダー行追加
       await sheets.spreadsheets.values.append({
         spreadsheetId: targetSheetId,
-        range: 'LOG!A:I',
+        range: 'LOG!A1',
         valueInputOption: 'RAW',
         requestBody: { values: [['timestamp', 'userId', 'displayName', 'messageId', 'quotedMessageId', 'role', 'content', 'fileUrl', 'reply']] },
       });
@@ -528,7 +528,7 @@ async function flushHistoryQueue() {
     try {
       await sheets.spreadsheets.values.append({
         spreadsheetId: sheetId,
-        range: 'LOG!A:I',
+        range: 'LOG!A1',
         valueInputOption: 'RAW',
         requestBody: { values: rows },
       });
@@ -554,7 +554,7 @@ async function resolveQuotedMessage(userId, quotedMessageId) {
     const sheets = getSheetsClient();
     const res = await sheets.spreadsheets.values.get({
       spreadsheetId: entry.sheetId,
-      range: 'LOG!A:I',
+      range: 'LOG!A1',
     });
     const rows = res.data.values || [];
     const row = rows.find(r => r[3] === quotedMessageId);
@@ -2830,7 +2830,7 @@ async function restoreHistoryOnStartup() {
       try {
         const logRes = await sheets.spreadsheets.values.get({
           spreadsheetId: sheetId,
-          range: 'LOG!A:I',
+          range: 'LOG!A1',
         });
         const logRows = (logRes.data.values || []).slice(1); // ヘッダー除外
         const recent = logRows.slice(-100);
