@@ -2274,17 +2274,24 @@ async function uploadToShopifyCDN(buffer, fileName, mimeType) {
       return null;
     }
 
-    // Step 2: 署名付きURLにファイルをPOSTアップロード（ネイティブFormData使用）
-    const nativeForm = new globalThis.FormData();
-    for (const param of target.parameters) {
-      nativeForm.append(param.name, param.value);
+    // Step 2: 署名付きURLにファイルをアップロード
+    // 画像はFormData、ファイルはraw bytes（ファイル破損防止）
+    let uploadRes;
+    if (mimeType.startsWith('image/')) {
+      const nativeForm = new globalThis.FormData();
+      for (const param of target.parameters) {
+        nativeForm.append(param.name, param.value);
+      }
+      nativeForm.append('file', new Blob([buffer], { type: mimeType }), fileName);
+      uploadRes = await fetch(target.url, { method: 'POST', body: nativeForm });
+    } else {
+      // ファイルはraw bytesで送信（FormDataだとバウンダリが混入して破損する）
+      uploadRes = await fetch(target.url, {
+        method: 'PUT',
+        headers: { 'Content-Type': mimeType },
+        body: buffer,
+      });
     }
-    nativeForm.append('file', new Blob([buffer], { type: mimeType }), fileName);
-
-    const uploadRes = await fetch(target.url, {
-      method: 'POST',
-      body: nativeForm,
-    });
     console.log(`ShopifyStep2ステータス: ${uploadRes.status}`);
 
     // Step 3: resourceUrl を使って fileCreate
@@ -2329,36 +2336,27 @@ async function uploadToShopifyCDN(buffer, fileName, mimeType) {
     console.log('ShopifyfileCreate結果:', JSON.stringify(createData?.data?.fileCreate?.files?.[0]));
 
     // ポーリングでURLが出るまで待つ（最大15秒）
-    const isImage = mimeType.startsWith('image/');
-    const pollQuery = isImage ? `
-      query getFile($id: ID!) {
-        node(id: $id) {
-          ... on MediaImage {
-            image { url }
-            status
-          }
-        }
-      }
-    ` : `
-      query getFile($query: String!) {
+    // files クエリで fileStatus: READY になるまで待つ
+    const pollQuery = `
+      query getFiles($query: String!) {
         files(first: 1, query: $query) {
           nodes {
+            fileStatus
+            ... on MediaImage {
+              image { url }
+            }
             ... on GenericFile {
               url
-              fileStatus
             }
           }
         }
       }
     `;
+    const fileNumericId = fileId ? fileId.split('/').pop() : null;
 
     for (let i = 0; i < 5; i++) {
       await new Promise(r => setTimeout(r, 3000));
-      if (!fileId) break;
-
-      const pollVariables = isImage
-        ? { id: fileId }
-        : { query: `id:${fileId.split('/').pop()}` };
+      if (!fileNumericId) break;
 
       const pollRes = await fetch(`https://${SHOPIFY_DOMAIN}/admin/api/${SHOPIFY_API_VERSION}/graphql.json`, {
         method: 'POST',
@@ -2366,17 +2364,19 @@ async function uploadToShopifyCDN(buffer, fileName, mimeType) {
           'Content-Type': 'application/json',
           'X-Shopify-Access-Token': SHOPIFY_ACCESS_TOKEN,
         },
-        body: JSON.stringify({ query: pollQuery, variables: pollVariables }),
+        body: JSON.stringify({ query: pollQuery, variables: { query: `id:${fileNumericId}` } }),
       });
       const pollData = await pollRes.json();
-      const url = isImage
-        ? pollData?.data?.node?.image?.url
-        : pollData?.data?.files?.nodes?.[0]?.url;
-      const status = isImage
-        ? pollData?.data?.node?.status
-        : pollData?.data?.files?.nodes?.[0]?.fileStatus;
-      console.log(`ShopifyポーリングURL: ${url} status: ${status}`);
-      if (url) {
+      const node = pollData?.data?.files?.nodes?.[0];
+      const fileStatus = node?.fileStatus;
+      const url = node?.image?.url || node?.url;
+      console.log(`ShopifyポーリングURL: ${url} fileStatus: ${fileStatus}`);
+
+      if (fileStatus === 'FAILED') {
+        console.error('Shopifyファイル処理失敗: FAILED');
+        return null;
+      }
+      if (url && fileStatus === 'READY') {
         console.log(`ShopifyCDNアップロード完了: ${url}`);
         return url;
       }
