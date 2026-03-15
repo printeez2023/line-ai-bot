@@ -236,12 +236,10 @@ async function getOrCreateSlackChannel(userId, displayName) {
 async function notifySlack(userId, summary) {
   const user = getUser(userId);
 
-  // 顧客名を取得（キャッシュがあればそれを使う）
   if (!user.displayName) {
     user.displayName = await getLineProfile(userId);
   }
 
-  // チャンネルを取得 or 作成
   if (!user.slackChannelId) {
     user.slackChannelId = await getOrCreateSlackChannel(userId, user.displayName);
   }
@@ -249,27 +247,22 @@ async function notifySlack(userId, summary) {
   const channelId = user.slackChannelId;
   if (!channelId) return;
 
-  // 送信前に必ずJoin（再起動後などに備えて）
   await joinChannel(channelId);
 
-  const text = `🔔 *スタッフ対応リクエスト*\n顧客名: *${user.displayName}*\nLINE ID: \`${userId}\`\n\n${summary}\n\n_返信は \`@LINE CS Bot メッセージ\` の形式で送ってください_`;
+  const isRepeat = user.notifiedOnce === true;
+  const text = isRepeat
+    ? `🔁 *再度スタッフ対応リクエスト*\n\n${summary}\n\n_返信は \`@LINE CS Bot メッセージ\` の形式で送ってください_`
+    : `🔔 *スタッフ対応リクエスト*\n顧客名: *${user.displayName}*\nLINE ID: \`${userId}\`\n\n${summary}\n\n_返信は \`@LINE CS Bot メッセージ\` の形式で送ってください_`;
 
-  if (user.slackThreadTs) {
-    await sendToSlack(channelId, `🔁 再度スタッフ対応リクエスト\n\n${summary}`, user.slackThreadTs);
-    console.log(`[${userId}] Slackスレッドに追記`);
-  } else {
-    const data = await sendToSlack(channelId, text);
-    if (data && data.ts) {
-      user.slackThreadTs = data.ts;
-      console.log(`[${userId}] Slackスレッド新規作成: ${data.ts}`);
-    }
-  }
+  await sendToSlack(channelId, text);
+  user.notifiedOnce = true;
+  console.log(`[${userId}] Slack通知送信`);
 }
 
 // スタッフモード中のメッセージをSlackに転送
 async function forwardToSlack(userId, message) {
   const user = getUser(userId);
-  console.log(`[${userId}] forwardToSlack開始 channelId=${user.slackChannelId} threadTs=${user.slackThreadTs}`);
+  console.log(`[${userId}] forwardToSlack開始 channelId=${user.slackChannelId}`);
 
   // slackChannelId がない場合（再起動後など）→ 顧客名からチャンネルを復元
   if (!user.slackChannelId) {
@@ -297,20 +290,10 @@ async function forwardToSlack(userId, message) {
     return;
   }
 
-  // 送信前に必ずJoin（再起動後などに備えて）
   await joinChannel(user.slackChannelId);
 
-  // slackThreadTs がない場合は新規スレッドを作成
-  if (!user.slackThreadTs) {
-    const data = await sendToSlack(user.slackChannelId, `🔔 *スタッフ対応継続中*\nLINE ID: \`${userId}\``);
-    if (data && data.ts) {
-      user.slackThreadTs = data.ts;
-      console.log(`[${userId}] Slackスレッド再作成: ${data.ts}`);
-    }
-  }
-
   console.log(`[${userId}] Slack転送実行: ${message}`);
-  await sendToSlack(user.slackChannelId, `👤 *${user.displayName || userId}*\n<!channel> ${message}`, user.slackThreadTs);
+  await sendToSlack(user.slackChannelId, `👤 *${user.displayName || userId}*\n<!channel> ${message}`);
 }
 
 // SlackユーザーIDからLINEユーザーIDを逆引き
@@ -358,6 +341,7 @@ function getUser(userId) {
       slackThreadTs: null,
       slackChannelId: null,
       displayName: null,
+      notifiedOnce: false,
     });
   }
   return users.get(userId);
