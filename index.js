@@ -309,12 +309,12 @@ function findLineUserBySlackChannel(channelId) {
 const GOOGLE_DRIVE_FOLDER_ID = process.env.GOOGLE_DRIVE_FOLDER_ID;
 
 function getDriveClient() {
-  const auth = new google.auth.GoogleAuth({
-    credentials: {
-      client_email: process.env.GOOGLE_CLIENT_EMAIL,
-      private_key: (process.env.GOOGLE_PRIVATE_KEY || '').replace(/\\n/g, '\n'),
-    },
-    scopes: ['https://www.googleapis.com/auth/drive'],
+  const auth = new google.auth.OAuth2(
+    process.env.GOOGLE_CLIENT_ID,
+    process.env.GOOGLE_CLIENT_SECRET,
+  );
+  auth.setCredentials({
+    refresh_token: process.env.GOOGLE_REFRESH_TOKEN,
   });
   return google.drive({ version: 'v3', auth });
 }
