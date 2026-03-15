@@ -2265,6 +2265,7 @@ async function uploadToShopifyCDN(buffer, fileName, mimeType) {
     }
 
     const fileId = createData?.data?.fileCreate?.files?.[0]?.id;
+    console.log('ShopifyfileCreate結果:', JSON.stringify(createData?.data?.fileCreate?.files?.[0]));
 
     // ポーリングでURLが出るまで待つ（最大15秒）
     const pollQuery = `
