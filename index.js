@@ -2527,7 +2527,7 @@ app.post('/slack/events', express.json(), async (req, res) => {
               messageUrlMap.set(file.id || file.name, fileUrl);
               messages.push({
                 type: 'text',
-                text: `📎 ${file.name}\n${fileUrl}`,
+                text: ` ${file.name}\nファイルは下記リンクよりご確認ください\n${fileUrl}`,
               });
               console.log(`[${lineUserId}] ファイルURL取得: ${file.name}`);
             } else {
