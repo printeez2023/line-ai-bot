@@ -249,6 +249,9 @@ async function notifySlack(userId, summary) {
   const channelId = user.slackChannelId;
   if (!channelId) return;
 
+  // 送信前に必ずJoin（再起動後などに備えて）
+  await joinChannel(channelId);
+
   const text = `🔔 *スタッフ対応リクエスト*\n顧客名: *${user.displayName}*\nLINE ID: \`${userId}\`\n\n${summary}\n\n_返信は \`@LINE CS Bot メッセージ\` の形式で送ってください_`;
 
   if (user.slackThreadTs) {
@@ -267,6 +270,8 @@ async function notifySlack(userId, summary) {
 async function forwardToSlack(userId, message) {
   const user = getUser(userId);
   if (!user.slackChannelId || !user.slackThreadTs) return;
+  // 送信前に必ずJoin（再起動後などに備えて）
+  await joinChannel(user.slackChannelId);
   await sendToSlack(user.slackChannelId, `👤 *${user.displayName || userId}*\n${message}`, user.slackThreadTs);
 }
 
