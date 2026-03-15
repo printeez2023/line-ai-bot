@@ -452,7 +452,7 @@ async function uploadFileToSlack(channelId, buffer, fileName, mimeType, initialC
         'Content-Type': 'application/json',
         Authorization: `Bearer ${SLACK_BOT_TOKEN}`,
       },
-      body: JSON.stringify({ filename: fileName, length: buffer.length }),
+      body: JSON.stringify({ filename: fileName, length: buffer.byteLength }),
     });
     const urlData = await urlRes.json();
     if (!urlData.ok) {
