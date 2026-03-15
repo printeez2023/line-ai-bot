@@ -262,7 +262,7 @@ async function notifySlack(userId, summary) {
 }
 
 // スタッフモード中のメッセージをSlackに転送
-async function forwardToSlack(userId, message) {
+async function forwardToSlack(userId, message, quotedMessageId = null) {
   const user = getUser(userId);
   console.log(`[${userId}] forwardToSlack開始 channelId=${user.slackChannelId}`);
 
@@ -294,8 +294,22 @@ async function forwardToSlack(userId, message) {
 
   await joinChannel(user.slackChannelId);
 
+  // リプライ情報を解決
+  let replyLine = '';
+  if (quotedMessageId) {
+    const quotedUrl = messageUrlMap.get(quotedMessageId);
+    const quotedText = messageTextMap.get(quotedMessageId);
+    if (quotedUrl) {
+      replyLine = `↩️ 返信先: ${quotedUrl}\n`;
+    } else if (quotedText) {
+      replyLine = `↩️ 返信先: 「${quotedText.slice(0, 50)}${quotedText.length > 50 ? '…' : ''}」\n`;
+    } else {
+      replyLine = `↩️ 返信先: （内容不明）\n`;
+    }
+  }
+
   console.log(`[${userId}] Slack転送実行: ${message}`);
-  await sendToSlack(user.slackChannelId, `👤 *${user.displayName || userId}*\n<!channel> ${message}`);
+  await sendToSlack(user.slackChannelId, `👤 *${user.displayName || userId}*\n${replyLine}<!channel> ${message}`);
 }
 
 // SlackユーザーIDからLINEユーザーIDを逆引き
@@ -436,6 +450,9 @@ async function uploadLineContentToDrive(userId, messageId, fileName, mimeType) {
       await uploadFileToSlack(user.slackChannelId, buffer, name, mimeType, `👤 *${displayName}* がファイルを送信しました\n📁 Drive: ${link}`);
     }
 
+    // メッセージIDとDrive URLを保存（リプライ解決用）
+    messageUrlMap.set(messageId, link);
+
     return { name, link };
   } catch (e) {
     console.error('Google Driveアップロードエラー:', e.message);
@@ -495,6 +512,10 @@ const users = new Map();
 const processedEvents = new Set();
 const eventTimestamps = new Map();
 const processingUsers = new Set();
+
+// メッセージIDとURL/テキストの対応Map（リプライ解決用）
+const messageUrlMap = new Map();   // messageId → DriveURL or ShopifyCDN URL
+const messageTextMap = new Map();  // messageId → テキスト本文
 
 const EVENT_TTL_MS     = 10 * 60 * 1000;
 const STAFF_TIMEOUT_MS = 24 * 60 * 60 * 1000; // 24時間
@@ -1814,8 +1835,11 @@ app.post('/webhook',
             console.log(`[${userId}] スタッフ対応中 → AI完全停止`);
             // スタッフモード中はメッセージをSlackに転送
             if (event.type === 'message') {
+              const quotedMessageId = event.message.quotedMessageId || null;
               if (event.message.type === 'text') {
-                await forwardToSlack(userId, event.message.text);
+                // テキストをMapに保存
+                messageTextMap.set(event.message.id, event.message.text);
+                await forwardToSlack(userId, event.message.text, quotedMessageId);
               } else if (event.message.type === 'image') {
                 const messageId = event.message.id;
                 if (!user.displayName) user.displayName = await getLineProfile(userId);
@@ -1959,6 +1983,8 @@ app.post('/webhook',
         if (event.type !== 'message' || event.message.type !== 'text') continue;
 
         const userMessage = event.message.text;
+        // テキストをMapに保存（リプライ解決用）
+        messageTextMap.set(event.message.id, userMessage);
 
         // pendingHandoff 中の処理（厳格化）
         if (user.pendingHandoff) {
@@ -2353,6 +2379,8 @@ app.post('/slack/events', express.json(), async (req, res) => {
             const buffer = Buffer.from(await imgRes.arrayBuffer());
             const imageUrl = await uploadToShopifyCDN(buffer, file.name, file.mimetype);
             if (imageUrl) {
+              // LINEメッセージIDがないのでファイル名をキーに保存
+              messageUrlMap.set(file.id || file.name, imageUrl);
               messages.push({
                 type: 'image',
                 originalContentUrl: imageUrl,
