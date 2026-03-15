@@ -2274,8 +2274,11 @@ async function uploadToShopifyCDN(buffer, fileName, mimeType) {
       return null;
     }
 
+    // Step1レスポンスをログ（デバッグ用）
+    console.log(`ShopifyStep1 url=${target.url} params=${JSON.stringify(target.parameters)}`);
+
     // Step 2: 署名付きURLにファイルをアップロード
-    // 画像はFormData、ファイルはraw bytes（ファイル破損防止）
+    // parametersのhttpMethodヒントを使い、画像はFormData、ファイルはPUT raw bytes
     let uploadRes;
     if (mimeType.startsWith('image/')) {
       const nativeForm = new globalThis.FormData();
@@ -2285,14 +2288,24 @@ async function uploadToShopifyCDN(buffer, fileName, mimeType) {
       nativeForm.append('file', new Blob([buffer], { type: mimeType }), fileName);
       uploadRes = await fetch(target.url, { method: 'POST', body: nativeForm });
     } else {
-      // ファイルはraw bytesで送信（FormDataだとバウンダリが混入して破損する）
+      // ファイルはraw bytesでPUT送信
+      const headers = { 'Content-Type': mimeType };
+      // parametersにContent-Typeがあれば上書き
+      for (const param of target.parameters) {
+        if (param.name.toLowerCase() === 'content-type') headers['Content-Type'] = param.value;
+      }
       uploadRes = await fetch(target.url, {
         method: 'PUT',
-        headers: { 'Content-Type': mimeType },
+        headers,
         body: buffer,
       });
     }
     console.log(`ShopifyStep2ステータス: ${uploadRes.status}`);
+    if (!uploadRes.ok) {
+      const errText = await uploadRes.text();
+      console.error(`ShopifyStep2失敗(${uploadRes.status}):`, errText.slice(0, 300));
+      return null;
+    }
 
     // Step 3: resourceUrl を使って fileCreate
     const createQuery = `
