@@ -2368,18 +2368,34 @@ app.post('/slack/events', express.json(), async (req, res) => {
       messages.push({ type: 'text', text });
     }
 
-    // 画像URLを取得して後に追加
+    // 画像・ファイルを処理して後に追加
     if (event.files && event.files.length > 0) {
       for (const file of event.files) {
-        if (file.mimetype && file.mimetype.startsWith('image/')) {
-          try {
-            const imgRes = await fetch(file.url_private, {
-              headers: { Authorization: `Bearer ${SLACK_BOT_TOKEN}` },
-            });
-            const buffer = Buffer.from(await imgRes.arrayBuffer());
+        try {
+          const MAX_SIZE = 20 * 1024 * 1024; // 20MB
+
+          // サイズチェック
+          if (file.size && file.size > MAX_SIZE) {
+            await sendToSlack(channelId, `⚠️ ${file.name} は20MBを超えているためLINEに送信できません（${(file.size / 1024 / 1024).toFixed(1)}MB）`);
+            continue;
+          }
+
+          // Slackからダウンロード
+          const fileRes = await fetch(file.url_private, {
+            headers: { Authorization: `Bearer ${SLACK_BOT_TOKEN}` },
+          });
+          const buffer = Buffer.from(await fileRes.arrayBuffer());
+
+          // 20MBチェック（サイズ情報がない場合のフォールバック）
+          if (buffer.byteLength > MAX_SIZE) {
+            await sendToSlack(channelId, `⚠️ ${file.name} は20MBを超えているためLINEに送信できません（${(buffer.byteLength / 1024 / 1024).toFixed(1)}MB）`);
+            continue;
+          }
+
+          if (file.mimetype && file.mimetype.startsWith('image/')) {
+            // 画像 → Shopify CDNにアップしてLINEに画像送信
             const imageUrl = await uploadToShopifyCDN(buffer, file.name, file.mimetype);
             if (imageUrl) {
-              // LINEメッセージIDがないのでファイル名をキーに保存
               messageUrlMap.set(file.id || file.name, imageUrl);
               messages.push({
                 type: 'image',
@@ -2390,10 +2406,23 @@ app.post('/slack/events', express.json(), async (req, res) => {
             } else {
               await sendToSlack(channelId, `⚠️ 画像のCDNアップロード失敗: ${file.name}`);
             }
-          } catch (e) {
-            console.error('Slack→LINE画像転送失敗:', e.message);
-            await sendToSlack(channelId, `⚠️ 画像転送失敗: ${e.message}`);
+          } else {
+            // ファイル → Shopify CDNにアップしてLINEにURLテキストで送信
+            const fileUrl = await uploadToShopifyCDN(buffer, file.name, file.mimetype || 'application/octet-stream');
+            if (fileUrl) {
+              messageUrlMap.set(file.id || file.name, fileUrl);
+              messages.push({
+                type: 'text',
+                text: `📎 ${file.name}\n${fileUrl}`,
+              });
+              console.log(`[${lineUserId}] ファイルURL取得: ${file.name}`);
+            } else {
+              await sendToSlack(channelId, `⚠️ ファイルのCDNアップロード失敗: ${file.name}`);
+            }
           }
+        } catch (e) {
+          console.error('Slack→LINEファイル転送失敗:', e.message);
+          await sendToSlack(channelId, `⚠️ ファイル転送失敗: ${file.name} - ${e.message}`);
         }
       }
     }
