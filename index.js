@@ -1671,7 +1671,7 @@ async function sendPreHandoffMessage(userId, replyToken, summary, triggerType) {
     `スタッフにお伝えしたいことがあれば、概要を教えてください。\n` +
     `他にご不明点はございますか？`;
 
-  await client.replyMessage(replyToken, {
+  const msg = {
     type: 'text',
     text: baseText + '\n\nby AI🦊キキ',
     quickReply: {
@@ -1680,18 +1680,19 @@ async function sendPreHandoffMessage(userId, replyToken, summary, triggerType) {
         { type: 'action', action: { type: 'message', label: '質問があります', text: '質問があります' } },
       ],
     },
-  });
+  };
+  await replyAndSave(replyToken, msg, userId, user.displayName);
   console.log(`[${userId}] pre-handoff メッセージ送信（${triggerType}）`);
 }
 
 // ===== 実際のスタッフ引き継ぎ =====
 async function executeHandoff(userId, replyToken) {
   const user = getUser(userId);
-  // replyを先に送ってからモード変更（返信欠落防止）
-  await client.replyMessage(replyToken, {
+  const msg = {
     type: 'text',
     text: 'スタッフにお繋ぎします！少々お待ちください🙏\nご用件がある場合は「キキを呼ぶ」とメッセージをお送りください。',
-  });
+  };
+  await replyAndSave(replyToken, msg, userId, user.displayName);
   user.pendingHandoff = false;
   aiOff(userId);
 
@@ -2085,7 +2086,7 @@ app.post('/webhook',
             if (isAiOn || isStaffEnd) {
               // 解除コマンドの場合のみ返信（タイムアウトは無言で復帰）
               try {
-                await client.replyMessage(replyToken, {
+                await replyAndSave(replyToken, {
                   type: 'text',
                   text: 'キキ🦊です！また会えましたね！何でもお気軽にどうぞ😊',
                 });
@@ -2153,7 +2154,7 @@ app.post('/webhook',
           }
           console.log(`[${userId}] スタンプ受信 → AI復帰処理`);
           aiOn(userId);
-          await client.replyMessage(replyToken, {
+          await replyAndSave(replyToken, {
             type: 'text',
             text: 'キキ🦊です！また会えましたね！何でもお気軽にどうぞ😊',
           });
@@ -2175,7 +2176,7 @@ app.post('/webhook',
             continue;
           }
 
-          await client.replyMessage(replyToken, {
+          await replyAndSave(replyToken, {
             type: 'text',
             text: 'すみません、画像の確認はキキにはできません🙏\nスタッフをお呼びしますか？\n\nby AI🦊キキ',
             quickReply: {
@@ -2220,7 +2221,7 @@ app.post('/webhook',
                 `このままスタッフに変わりますので少々お待ちください。\n` +
                 `他にご不明点はございますか？`;
 
-              await client.replyMessage(replyToken, {
+              await replyAndSave(replyToken, {
                 type: 'text',
                 text: confirmText + '\n\nby AI🦊キキ',
                 quickReply: {
@@ -2231,7 +2232,7 @@ app.post('/webhook',
                 },
               });
             } else {
-              await client.replyMessage(replyToken, {
+              await replyAndSave(replyToken, {
                 type: 'text',
                 text: `すみません、${ext ? ext.toUpperCase() + 'ファイル' : 'このファイル'}はキキには確認できません🙏\nPDF・AI・PSDファイルをお送りいただくか、以下からご入稿ください。\n\n📧 MAIL：contact@printeez.jp\n🔗 HP：https://printeez.jp/products/ファイルアップロード用ページ\n\nby AI🦊キキ`,
                 quickReply: {
@@ -2243,7 +2244,7 @@ app.post('/webhook',
               });
             }
           } else {
-            await client.replyMessage(replyToken, {
+            await replyAndSave(replyToken, {
               type: 'text',
               text: 'すみません、ファイルの確認はキキにはできません🙏\nスタッフをお呼びしますか？\n\nby AI🦊キキ',
               quickReply: {
@@ -2293,7 +2294,7 @@ app.post('/webhook',
             user.lastBotReply = Date.now();
           } else {
             // それ以外（誤送信・自由入力など）→ Gemini呼ばず、案内のみ返す
-            await client.replyMessage(replyToken, {
+            await replyAndSave(replyToken, {
               type: 'text',
               text: 'このままスタッフにお繋ぎしますか？\n\nby AI🦊キキ',
               quickReply: {
@@ -2345,7 +2346,7 @@ app.post('/webhook',
             `このままスタッフに変わりますので少々お待ちください。\n` +
             `他にご不明点はございますか？`;
 
-          await client.replyMessage(replyToken, {
+          await replyAndSave(replyToken, {
             type: 'text',
             text: confirmText + '\n\nby AI🦊キキ',
             quickReply: {
@@ -2384,7 +2385,7 @@ app.post('/webhook',
       } catch (err) {
         console.error('エラー:', err);
         try {
-          await client.replyMessage(replyToken, {
+          await replyAndSave(replyToken, {
             type: 'text',
             text: '申し訳ありません、少し時間をおいて再度お試しください🙏',
           });
