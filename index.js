@@ -1637,13 +1637,21 @@ async function replyAndSave(replyToken, messages, userId = null, displayName = n
   console.log(`replyAndSave sentMessages:`, JSON.stringify(res?.sentMessages?.map(s => s.id)));
   if (res?.sentMessages) {
     res.sentMessages.forEach((sent, i) => {
-      if (sent.id && msgArray[i]?.text) {
-        messageTextMap.set(sent.id, msgArray[i].text);
-        if (userId) {
-          queueHistoryWrite(userId, displayName, sent.id, null, 'bot', msgArray[i].text);
-        }
+      const msg = msgArray[i];
+      if (!sent.id) return;
+      if (msg?.text) {
+        messageTextMap.set(sent.id, msg.text);
+        if (userId) queueHistoryWrite(userId, displayName, sent.id, null, 'bot', msg.text);
+      } else if (msg?.type === 'image' && msg?.originalContentUrl) {
+        messageUrlMap.set(sent.id, msg.originalContentUrl);
+        if (userId) queueHistoryWrite(userId, displayName, sent.id, null, 'bot', '', msg.originalContentUrl);
       }
     });
+  }
+  // Sheetsへの書き込みを即時フラッシュ
+  if (historyWriteQueue.length > 0) {
+    if (historyQueueTimer) { clearTimeout(historyQueueTimer); historyQueueTimer = null; }
+    flushHistoryQueue().catch(e => console.error('即時フラッシュエラー:', e.message));
   }
   return res;
 }
@@ -1653,11 +1661,22 @@ async function pushAndSave(userId, messages, displayName = null) {
   const res = await client.pushMessage(userId, msgArray);
   if (res?.sentMessages) {
     res.sentMessages.forEach((sent, i) => {
-      if (sent.id && msgArray[i]?.text) {
-        messageTextMap.set(sent.id, msgArray[i].text);
-        queueHistoryWrite(userId, displayName, sent.id, null, 'bot', msgArray[i].text);
+      const msg = msgArray[i];
+      if (!sent.id) return;
+      if (msg?.text) {
+        messageTextMap.set(sent.id, msg.text);
+        queueHistoryWrite(userId, displayName, sent.id, null, 'bot', msg.text);
+      } else if (msg?.type === 'image' && msg?.originalContentUrl) {
+        // 画像メッセージのURLをmessageUrlMapに保存
+        messageUrlMap.set(sent.id, msg.originalContentUrl);
+        queueHistoryWrite(userId, displayName, sent.id, null, 'bot', '', msg.originalContentUrl);
       }
     });
+  }
+  // Sheetsへの書き込みを即時フラッシュ（リプライ解決の漏れ防止）
+  if (historyWriteQueue.length > 0) {
+    if (historyQueueTimer) { clearTimeout(historyQueueTimer); historyQueueTimer = null; }
+    flushHistoryQueue().catch(e => console.error('即時フラッシュエラー:', e.message));
   }
   return res;
 }
