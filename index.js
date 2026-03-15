@@ -2218,7 +2218,7 @@ async function uploadToShopifyCDN(buffer, fileName, mimeType) {
       input: [{
         filename: fileName,
         mimeType,
-        resource: 'IMAGE',
+        resource: mimeType.startsWith('image/') ? 'IMAGE' : 'FILE',
         fileSize: String(buffer.byteLength),
         httpMethod: 'POST',
       }],
@@ -2268,13 +2268,16 @@ async function uploadToShopifyCDN(buffer, fileName, mimeType) {
             ... on MediaImage {
               image { url }
             }
+            ... on GenericFile {
+              url
+            }
           }
           userErrors { field message }
         }
       }
     `;
     const createVariables = {
-      files: [{ originalSource: target.resourceUrl, filename: fileName }],
+      files: [{ originalSource: target.resourceUrl, filename: fileName, contentType: mimeType.startsWith('image/') ? 'IMAGE' : 'FILE' }],
     };
 
     const createRes = await fetch(`https://${SHOPIFY_DOMAIN}/admin/api/${SHOPIFY_API_VERSION}/graphql.json`, {
@@ -2305,6 +2308,10 @@ async function uploadToShopifyCDN(buffer, fileName, mimeType) {
             image { url }
             status
           }
+          ... on GenericFile {
+            url
+            status
+          }
         }
       }
     `;
@@ -2322,7 +2329,7 @@ async function uploadToShopifyCDN(buffer, fileName, mimeType) {
         body: JSON.stringify({ query: pollQuery, variables: { id: fileId } }),
       });
       const pollData = await pollRes.json();
-      const url = pollData?.data?.node?.image?.url;
+      const url = pollData?.data?.node?.image?.url || pollData?.data?.node?.url;
       const status = pollData?.data?.node?.status;
       console.log(`ShopifyポーリングURL: ${url} status: ${status}`);
       if (url) {
