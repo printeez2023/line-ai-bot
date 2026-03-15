@@ -2774,7 +2774,7 @@ app.post('/slack/events', express.json(), async (req, res) => {
         // Geminiで敬語変換
         const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
         const keigoRes = await ai.models.generateContent({
-          model: 'gemini-2.5-flash-preview-04-17',
+          model: 'gemini-2.5-flash',
           contents: [{ role: 'user', parts: [{ text:
             `以下のメッセージをお客様向けの丁寧な敬語に変換してください。意味は変えず、自然な日本語にしてください。変換後のテキストのみを出力し、説明は不要です。\n\n${text}`
           }] }],
