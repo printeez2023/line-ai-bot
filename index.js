@@ -446,7 +446,7 @@ async function uploadLineContentToDrive(userId, messageId, fileName, mimeType) {
 async function uploadFileToSlack(channelId, buffer, fileName, mimeType, initialComment = '') {
   try {
     // Step 1: アップロードURLを取得
-    const params = new URLSearchParams({ filename: fileName, length: String(buffer.byteLength) });
+    const params = new URLSearchParams({ filename: fileName, length: String(buffer.byteLength), channel_id: channelId });
     const urlRes = await fetch('https://slack.com/api/files.getUploadURLExternal', {
       method: 'POST',
       headers: {
