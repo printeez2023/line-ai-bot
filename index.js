@@ -50,6 +50,25 @@ async function initSlackBotUserId() {
 }
 initSlackBotUserId();
 
+// 起動時にBotを #line-顧客対応通知 に参加させる
+async function joinStaffChannel() {
+  try {
+    const res = await fetch('https://slack.com/api/conversations.join', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${SLACK_BOT_TOKEN}`,
+      },
+      body: JSON.stringify({ channel: SLACK_STAFF_CHANNEL_ID }),
+    });
+    const data = await res.json();
+    if (data.ok) console.log('Botが #line-顧客対応通知 に参加しました');
+    else console.error('スタッフチャンネル参加失敗:', data.error);
+  } catch (e) {
+    console.error('スタッフチャンネル参加エラー:', e.message);
+  }
+}
+
 // チャンネル名に使えない文字を除去
 function sanitizeChannelName(name) {
   return name
@@ -99,6 +118,26 @@ async function sendToSlack(channelId, text, threadTs = null) {
 }
 
 // 顧客ごとのSlackチャンネルを作成 or 既存を取得
+const SLACK_STAFF_CHANNEL_ID = 'C0ALRN2382G'; // #line-顧客対応通知
+
+async function getStaffMembers() {
+  try {
+    const res = await fetch(`https://slack.com/api/conversations.members?channel=${SLACK_STAFF_CHANNEL_ID}&limit=100`, {
+      headers: { Authorization: `Bearer ${SLACK_BOT_TOKEN}` },
+    });
+    const data = await res.json();
+    if (!data.ok) {
+      console.error('スタッフメンバー取得失敗:', data.error);
+      return [];
+    }
+    // BotユーザーIDを除外
+    return (data.members || []).filter(id => id !== slackBotUserId);
+  } catch (e) {
+    console.error('スタッフメンバー取得エラー:', e.message);
+    return [];
+  }
+}
+
 async function getOrCreateSlackChannel(userId, displayName) {
   const channelName = `line顧客-${sanitizeChannelName(displayName)}`;
   try {
@@ -130,18 +169,23 @@ async function getOrCreateSlackChannel(userId, displayName) {
     const channelId = createData.channel.id;
     console.log(`[${userId}] Slackチャンネル新規作成: ${channelName} (${channelId})`);
 
-    // チャンネルにBotを招待
-    if (slackBotUserId) {
+    // #line-顧客対応通知のスタッフメンバーを取得
+    const staffMembers = await getStaffMembers();
+
+    // Bot + スタッフ全員をチャンネルに招待
+    const usersToInvite = [slackBotUserId, ...staffMembers].filter(Boolean).join(',');
+    if (usersToInvite) {
       const inviteRes = await fetch('https://slack.com/api/conversations.invite', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           Authorization: `Bearer ${SLACK_BOT_TOKEN}`,
         },
-        body: JSON.stringify({ channel: channelId, users: slackBotUserId }),
+        body: JSON.stringify({ channel: channelId, users: usersToInvite }),
       });
       const inviteData = await inviteRes.json();
-      if (!inviteData.ok) console.error('Bot招待失敗:', inviteData.error);
+      if (!inviteData.ok) console.error('招待失敗:', inviteData.error);
+      else console.log(`[${userId}] スタッフ${staffMembers.length}人を招待完了`);
     }
 
     // トピックにLINEユーザーIDを設定
@@ -153,6 +197,12 @@ async function getOrCreateSlackChannel(userId, displayName) {
       },
       body: JSON.stringify({ channel: channelId, topic: `LINE UserID: ${userId}` }),
     });
+
+    // #line-顧客対応通知に新チャンネル作成を通知
+    await sendToSlack(
+      SLACK_STAFF_CHANNEL_ID,
+      `📢 新しい顧客チャンネルが作成されました！\n顧客名: *${displayName}*\nチャンネル: <#${channelId}>\n\nスタッフの皆さんは自動で招待済みです✅`
+    );
 
     return channelId;
   } catch (e) {
@@ -1926,4 +1976,5 @@ app.get('/health', (req, res) => {
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`サーバー起動中: port ${PORT}`);
+  joinStaffChannel();
 });
