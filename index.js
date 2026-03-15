@@ -1824,7 +1824,8 @@ async function callGemini(history, systemPrompt) {
 }
 
 // ===== Geminiに問い合わせる関数 =====
-async function askGemini(userId, userMessage) {
+async function askGemini(userId, userMessage, geminiMessage = null) {
+  if (!geminiMessage) geminiMessage = userMessage;
   if (!conversationHistory.has(userId)) {
     conversationHistory.set(userId, []);
   }
@@ -2311,7 +2312,7 @@ app.post('/webhook',
             // 「ある」→ pendingHandoffを維持したままGeminiで追加質問を受ける
             user.pendingHandoff = false;
             await showLoadingAnimation(userId, 30);
-            const parsed = await askGemini(userId, userMessage);
+            const parsed = await askGemini(userId, userMessage, geminiMessage);
             const _msgs = buildMessages(parsed); const _res = await replyAndSave(replyToken, _msgs, userId, user.displayName); 
             user.lastBotReply = Date.now();
           } else {
@@ -2356,7 +2357,7 @@ app.post('/webhook',
           console.log(`[${userId}] 再生産・追加注文リクエスト検知`);
         }
 
-        const parsed = await askGemini(userId, userMessage);
+        const parsed = await askGemini(userId, userMessage, geminiMessage);
 
         if (parsed.autoHandoff === true && !user.pendingHandoff) {
           const summary = await generateSummary(userId);
