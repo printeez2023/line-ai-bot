@@ -269,9 +269,45 @@ async function notifySlack(userId, summary) {
 // スタッフモード中のメッセージをSlackに転送
 async function forwardToSlack(userId, message) {
   const user = getUser(userId);
-  if (!user.slackChannelId || !user.slackThreadTs) return;
+
+  // slackChannelId がない場合（再起動後など）→ 顧客名からチャンネルを復元
+  if (!user.slackChannelId) {
+    if (!user.displayName) {
+      user.displayName = await getLineProfile(userId);
+    }
+    const channelName = `line顧客-${sanitizeChannelName(user.displayName)}`;
+    try {
+      const listRes = await fetch('https://slack.com/api/conversations.list?limit=1000', {
+        headers: { Authorization: `Bearer ${SLACK_BOT_TOKEN}` },
+      });
+      const listData = await listRes.json();
+      const found = (listData.channels || []).find(c => c.name === channelName);
+      if (found) {
+        user.slackChannelId = found.id;
+        console.log(`[${userId}] Slackチャンネル復元: ${channelName} (${found.id})`);
+      }
+    } catch (e) {
+      console.error('Slackチャンネル復元エラー:', e.message);
+    }
+  }
+
+  if (!user.slackChannelId) {
+    console.warn(`[${userId}] Slackチャンネルが見つからないため転送スキップ`);
+    return;
+  }
+
   // 送信前に必ずJoin（再起動後などに備えて）
   await joinChannel(user.slackChannelId);
+
+  // slackThreadTs がない場合は新規スレッドを作成
+  if (!user.slackThreadTs) {
+    const data = await sendToSlack(user.slackChannelId, `🔔 *スタッフ対応継続中*\nLINE ID: \`${userId}\``);
+    if (data && data.ts) {
+      user.slackThreadTs = data.ts;
+      console.log(`[${userId}] Slackスレッド再作成: ${data.ts}`);
+    }
+  }
+
   await sendToSlack(user.slackChannelId, `👤 *${user.displayName || userId}*\n${message}`, user.slackThreadTs);
 }
 
