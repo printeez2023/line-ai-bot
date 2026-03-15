@@ -2682,6 +2682,65 @@ app.get('/f/:shortId', async (req, res) => {
   }
 });
 
+// ===== Slack インタラクション（ボタン押下）=====
+app.post('/slack/interactions', express.urlencoded({ extended: true }), async (req, res) => {
+  res.sendStatus(200);
+
+  try {
+    const payload = JSON.parse(req.body.payload);
+    const action = payload.actions?.[0];
+    if (!action) return;
+
+    const channelId = payload.channel?.id;
+
+    if (action.action_id === 'keigo_send') {
+      const { lineUserId, keigoText, channelId: ch } = JSON.parse(action.value);
+      const lineUser = users.get(lineUserId);
+      const displayName = lineUser?.displayName || null;
+
+      // LINEに送信
+      await pushAndSave(lineUserId, { type: 'text', text: keigoText }, displayName);
+      console.log(`[${lineUserId}] 敬語変換後テキストをLINEに送信`);
+
+      // ボタンを無効化してメッセージ更新
+      await fetch('https://slack.com/api/chat.update', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${SLACK_BOT_TOKEN}` },
+        body: JSON.stringify({
+          channel: payload.channel.id,
+          ts: payload.message.ts,
+          blocks: [
+            {
+              type: 'section',
+              text: { type: 'mrkdwn', text: `*✅ LINE送信済み*\n\n${keigoText}` },
+            },
+          ],
+        }),
+      });
+
+    } else if (action.action_id === 'keigo_cancel') {
+      // キャンセル時はメッセージを更新
+      await fetch('https://slack.com/api/chat.update', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${SLACK_BOT_TOKEN}` },
+        body: JSON.stringify({
+          channel: payload.channel.id,
+          ts: payload.message.ts,
+          blocks: [
+            {
+              type: 'section',
+              text: { type: 'mrkdwn', text: `*❌ キャンセルされました*` },
+            },
+          ],
+        }),
+      });
+      console.log(`Slack→LINE送信キャンセル: ${channelId}`);
+    }
+  } catch (e) {
+    console.error('インタラクション処理エラー:', e.message);
+  }
+});
+
 // ===== Slack → LINE 返信エンドポイント =====
 app.post('/slack/events', express.json(), async (req, res) => {
   const body = req.body;
@@ -2709,8 +2768,64 @@ app.post('/slack/events', express.json(), async (req, res) => {
 
     const messages = [];
 
-    // テキストを先に追加（Slackと同じ順番）
-    if (text) {
+    // テキストがある場合 → 敬語変換フロー（ファイルなしの場合のみ）
+    if (text && (!event.files || event.files.length === 0)) {
+      try {
+        // Geminiで敬語変換
+        const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+        const keigoRes = await ai.models.generateContent({
+          model: 'gemini-2.5-flash-preview-04-17',
+          contents: [{ role: 'user', parts: [{ text:
+            `以下のメッセージをお客様向けの丁寧な敬語に変換してください。意味は変えず、自然な日本語にしてください。変換後のテキストのみを出力し、説明は不要です。\n\n${text}`
+          }] }],
+        });
+        const keigoText = keigoRes.candidates?.[0]?.content?.parts?.[0]?.text?.trim() || text;
+
+        // Block Kitでプレビュー表示
+        const previewBlock = {
+          blocks: [
+            {
+              type: 'section',
+              text: { type: 'mrkdwn', text: `*📝 敬語変換プレビュー*\n\n*元のメッセージ:*\n${text}\n\n*変換後:*\n${keigoText}` },
+            },
+            {
+              type: 'actions',
+              elements: [
+                {
+                  type: 'button',
+                  text: { type: 'plain_text', text: '✅ 送信する' },
+                  style: 'primary',
+                  action_id: 'keigo_send',
+                  value: JSON.stringify({ lineUserId, keigoText, channelId }),
+                },
+                {
+                  type: 'button',
+                  text: { type: 'plain_text', text: '❌ キャンセル' },
+                  style: 'danger',
+                  action_id: 'keigo_cancel',
+                  value: channelId,
+                },
+              ],
+            },
+          ],
+        };
+
+        const res = await fetch('https://slack.com/api/chat.postMessage', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${SLACK_BOT_TOKEN}` },
+          body: JSON.stringify({ channel: channelId, ...previewBlock }),
+        });
+        const data = await res.json();
+        if (!data.ok) console.error('Block Kit送信失敗:', data.error);
+        else console.log(`[${lineUserId}] 敬語変換プレビュー送信完了`);
+        return;
+      } catch (e) {
+        console.error('敬語変換エラー:', e.message);
+        // エラー時は通常送信にフォールバック
+        messages.push({ type: 'text', text });
+      }
+    } else if (text) {
+      // ファイルありの場合はテキストをそのまま追加
       messages.push({ type: 'text', text });
     }
 
