@@ -1634,6 +1634,7 @@ async function generateSummary(userId) {
 async function replyAndSave(replyToken, messages, userId = null, displayName = null) {
   const msgArray = (Array.isArray(messages) ? messages : [messages]).filter(Boolean);
   const res = await client.replyMessage(replyToken, msgArray);
+  console.log(`replyAndSave sentMessages:`, JSON.stringify(res?.sentMessages?.map(s => s.id)));
   if (res?.sentMessages) {
     res.sentMessages.forEach((sent, i) => {
       if (sent.id && msgArray[i]?.text) {
@@ -2259,16 +2260,21 @@ app.post('/webhook',
         if (event.type !== 'message' || event.message.type !== 'text') continue;
 
         const userMessage = event.message.text;
-        // テキストをMapに保存 + 履歴キューに追加
+        // テキストをMapに保存
         messageTextMap.set(event.message.id, userMessage);
         const quotedMsgId = event.message.quotedMessageId || event.message.quoted?.messageId || null;
-        // リプライ内容を解決してキューに追加
-        let replyContent = '';
+        // リプライ内容解決は非同期でバックグラウンド処理（AIの返答をブロックしない）
+        const msgIdForHistory = event.message.id;
         if (quotedMsgId) {
-          const quoted = await resolveQuotedMessage(userId, quotedMsgId);
-          replyContent = quoted?.value || '（内容不明）';
+          resolveQuotedMessage(userId, quotedMsgId).then(quoted => {
+            const replyContent = quoted?.value || '（内容不明）';
+            queueHistoryWrite(userId, user.displayName, msgIdForHistory, quotedMsgId, 'user', userMessage, '', replyContent);
+          }).catch(() => {
+            queueHistoryWrite(userId, user.displayName, msgIdForHistory, quotedMsgId, 'user', userMessage);
+          });
+        } else {
+          queueHistoryWrite(userId, user.displayName, msgIdForHistory, null, 'user', userMessage);
         }
-        queueHistoryWrite(userId, user.displayName, event.message.id, quotedMsgId, 'user', userMessage, '', replyContent);
 
         // pendingHandoff 中の処理（厳格化）
         if (user.pendingHandoff) {
@@ -2283,7 +2289,7 @@ app.post('/webhook',
             user.pendingHandoff = false;
             await showLoadingAnimation(userId, 30);
             const parsed = await askGemini(userId, userMessage);
-            const _msgs = buildMessages(parsed); const _res = await replyAndSave(replyToken, _msgs); 
+            const _msgs = buildMessages(parsed); const _res = await replyAndSave(replyToken, _msgs, userId, user.displayName); 
             user.lastBotReply = Date.now();
           } else {
             // それ以外（誤送信・自由入力など）→ Gemini呼ばず、案内のみ返す
@@ -2371,7 +2377,7 @@ app.post('/webhook',
               console.log(`[${userId}] 入稿待ち状態にセット（AIフラグ=${parsed.nyuukouReady} テキスト=${textTriggered}）`);
             }
           }
-          const _msgs = buildMessages(parsed); const _res = await replyAndSave(replyToken, _msgs); 
+          const _msgs = buildMessages(parsed); const _res = await replyAndSave(replyToken, _msgs, userId, user.displayName); 
           user.lastBotReply = Date.now();
         }
 
