@@ -404,7 +404,7 @@ async function findCustomerInIndex(userId) {
     const rows = res.data.values || [];
     const row = rows.find(r => r[0] === userId);
     if (row) {
-      const entry = { sheetId: row[2], displayName: row[1] };
+      const entry = { sheetId: row[2], displayName: row[1], sheetName: row[1] };
       historyIndexCache.set(userId, entry);
       return entry;
     }
@@ -420,20 +420,19 @@ async function registerCustomer(userId, displayName) {
   try {
     const sheets = getSheetsClient();
     const drive  = getDriveClient();
+    const safeDisplayName = displayName || userId;
 
-    // 最新冊を確認（A列の最後のスプレッドシートIDを取得）
+    // 最新冊を確認
     const idxRes = await sheets.spreadsheets.values.get({
       spreadsheetId: LINE_HISTORY_INDEX_ID,
       range: 'シート1!A:D',
     });
     const rows = (idxRes.data.values || []).filter(r => r[0] && r[0] !== 'userId');
 
-    // 最新冊のシートIDを取得（D列に冊ID保存）
+    // 最新冊のシートIDを取得
     let targetSheetId = null;
     if (rows.length > 0) {
-      // 最後の行の冊IDを確認
       const lastSheetId = rows[rows.length - 1][2];
-      // 同じsheetIdの行数をカウント
       const count = rows.filter(r => r[2] === lastSheetId).length;
       if (count < 100) {
         targetSheetId = lastSheetId;
@@ -446,7 +445,7 @@ async function registerCustomer(userId, displayName) {
       const newSheet = await sheets.spreadsheets.create({
         requestBody: {
           properties: { title: `LINE会話履歴_${bookNum}` },
-          sheets: [{ properties: { title: 'LOG' } }],
+          sheets: [{ properties: { title: safeDisplayName } }],
         },
       });
       targetSheetId = newSheet.data.spreadsheetId;
@@ -458,29 +457,37 @@ async function registerCustomer(userId, displayName) {
         removeParents: 'root',
         fields: 'id, parents',
       });
-
-      // ヘッダー行追加
-      await sheets.spreadsheets.values.append({
-        spreadsheetId: targetSheetId,
-        range: 'LOG!A1',
-        valueInputOption: 'RAW',
-        requestBody: { values: [['timestamp', 'userId', 'displayName', 'messageId', 'quotedMessageId', 'role', 'content', 'fileUrl', 'reply']] },
-      });
-
       console.log(`新冊作成: LINE会話履歴_${bookNum} (${targetSheetId})`);
+    } else {
+      // 既存冊に顧客シートを追加
+      await sheets.spreadsheets.batchUpdate({
+        spreadsheetId: targetSheetId,
+        requestBody: {
+          requests: [{ addSheet: { properties: { title: safeDisplayName } } }],
+        },
+      });
+      console.log(`既存冊にシート追加: ${safeDisplayName} → ${targetSheetId}`);
     }
 
-    // INDEXに追記
+    // ヘッダー行追加
+    await sheets.spreadsheets.values.append({
+      spreadsheetId: targetSheetId,
+      range: `${safeDisplayName}!A1`,
+      valueInputOption: 'RAW',
+      requestBody: { values: [['timestamp', 'userId', 'displayName', 'messageId', 'quotedMessageId', 'role', 'content', 'fileUrl', 'reply']] },
+    });
+
+    // INDEXに追記（sheetName列を追加）
     await sheets.spreadsheets.values.append({
       spreadsheetId: LINE_HISTORY_INDEX_ID,
       range: 'シート1!A:D',
       valueInputOption: 'RAW',
-      requestBody: { values: [[userId, displayName, targetSheetId, new Date().toISOString()]] },
+      requestBody: { values: [[userId, safeDisplayName, targetSheetId, new Date().toISOString()]] },
     });
 
-    const entry = { sheetId: targetSheetId, displayName };
+    const entry = { sheetId: targetSheetId, displayName: safeDisplayName, sheetName: safeDisplayName };
     historyIndexCache.set(userId, entry);
-    console.log(`顧客登録: ${displayName} (${userId}) → ${targetSheetId}`);
+    console.log(`顧客登録: ${safeDisplayName} (${userId}) → ${targetSheetId}`);
     return entry;
   } catch (e) {
     console.error('顧客登録エラー:', e.message);
@@ -506,6 +513,12 @@ async function flushHistoryQueue() {
   // sheetId別にグループ化
   const groups = new Map();
   for (const item of batch) {
+    // displayNameが空の場合はusersマップから補完
+    if (!item.displayName) {
+      const u = users.get(item.userId);
+      if (u?.displayName) item.displayName = u.displayName;
+    }
+
     let entry = historyIndexCache.get(item.userId);
     if (!entry) {
       entry = await findCustomerInIndex(item.userId);
@@ -513,26 +526,31 @@ async function flushHistoryQueue() {
         entry = await registerCustomer(item.userId, item.displayName);
       }
     }
+    // entryのdisplayNameも補完
+    if (entry && !entry.displayName && item.displayName) {
+      entry.displayName = item.displayName;
+      historyIndexCache.set(item.userId, entry);
+    }
     if (!entry) continue;
-    if (!groups.has(entry.sheetId)) groups.set(entry.sheetId, []);
-    groups.get(entry.sheetId).push([
-      item.timestamp, item.userId, item.displayName,
+    if (!groups.has(entry.sheetId)) groups.set(entry.sheetId, { sheetName: entry.sheetName || entry.displayName || 'LOG', rows: [] });
+    groups.get(entry.sheetId).rows.push([
+      item.timestamp, item.userId, item.displayName || item.userId,
       item.messageId || '', item.quotedMessageId || '',
       item.role, item.content, item.fileUrl, item.reply || '',
     ]);
-    console.log(`履歴キュー追加: sheetId=${entry.sheetId} role=${item.role} cols=9`);
+    console.log(`履歴キュー追加: sheetId=${entry.sheetId} role=${item.role} displayName=${item.displayName || '(なし)'}`);
   }
 
   const sheets = getSheetsClient();
-  for (const [sheetId, rows] of groups) {
+  for (const [sheetId, { sheetName, rows }] of groups) {
     try {
       await sheets.spreadsheets.values.append({
         spreadsheetId: sheetId,
-        range: 'LOG!A1',
+        range: `${sheetName}!A1`,
         valueInputOption: 'RAW',
         requestBody: { values: rows },
       });
-      console.log(`履歴書き込み完了: ${rows.length}件 → ${sheetId}`);
+      console.log(`履歴書き込み完了: ${rows.length}件 → ${sheetId} [${sheetName}]`);
     } catch (e) {
       console.error(`履歴書き込みエラー(${sheetId}):`, e.message);
     }
@@ -551,10 +569,11 @@ async function resolveQuotedMessage(userId, quotedMessageId) {
   try {
     const entry = historyIndexCache.get(userId) || await findCustomerInIndex(userId);
     if (!entry) return null;
+    const sheetName = entry.sheetName || entry.displayName || 'LOG';
     const sheets = getSheetsClient();
     const res = await sheets.spreadsheets.values.get({
       spreadsheetId: entry.sheetId,
-      range: 'LOG!A1',
+      range: `${sheetName}!A1`,
     });
     const rows = res.data.values || [];
     const row = rows.find(r => r[3] === quotedMessageId);
@@ -2952,27 +2971,36 @@ async function restoreHistoryOnStartup() {
     for (const row of rows) {
       const [userId, displayName, sheetId] = row;
       if (!historyIndexCache.has(userId)) {
-        historyIndexCache.set(userId, { sheetId, displayName });
+        historyIndexCache.set(userId, { sheetId, displayName, sheetName: displayName });
       }
       sheetIds.add(sheetId);
     }
     console.log(`INDEX復元: ${rows.length}顧客`);
 
-    // 各シートの直近100件をメモリに展開
+    // 各シートのシート一覧を取得して直近100件をメモリに展開
     for (const sheetId of sheetIds) {
       try {
-        const logRes = await sheets.spreadsheets.values.get({
-          spreadsheetId: sheetId,
-          range: 'LOG!A1',
-        });
-        const logRows = (logRes.data.values || []).slice(1); // ヘッダー除外
-        const recent = logRows.slice(-100);
+        // スプレッドシートのシート一覧を取得
+        const meta = await sheets.spreadsheets.get({ spreadsheetId: sheetId });
+        const sheetNames = meta.data.sheets.map(s => s.properties.title).filter(t => t !== 'LOG');
 
-        for (const r of recent) {
-          const [, userId, , messageId, , role, content, fileUrl] = r;
-          if (!messageId) continue;
-          if (fileUrl) messageUrlMap.set(messageId, fileUrl);
-          if (content) messageTextMap.set(messageId, content);
+        for (const sheetName of sheetNames) {
+          try {
+            const logRes = await sheets.spreadsheets.values.get({
+              spreadsheetId: sheetId,
+              range: `${sheetName}!A1`,
+            });
+            const logRows = (logRes.data.values || []).slice(1);
+            const recent = logRows.slice(-100);
+            for (const r of recent) {
+              const [, userId, , messageId, , role, content, fileUrl] = r;
+              if (!messageId) continue;
+              if (fileUrl) messageUrlMap.set(messageId, fileUrl);
+              if (content) messageTextMap.set(messageId, content);
+            }
+          } catch (e) {
+            console.error(`シート復元エラー(${sheetId}/${sheetName}):`, e.message);
+          }
         }
       } catch (e) {
         console.error(`シート復元エラー(${sheetId}):`, e.message);
