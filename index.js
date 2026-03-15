@@ -462,9 +462,9 @@ async function registerCustomer(userId, displayName) {
       // ヘッダー行追加
       await sheets.spreadsheets.values.append({
         spreadsheetId: targetSheetId,
-        range: 'LOG!A:H',
+        range: 'LOG!A:I',
         valueInputOption: 'RAW',
-        requestBody: { values: [['timestamp', 'userId', 'displayName', 'messageId', 'quotedMessageId', 'role', 'content', 'fileUrl']] },
+        requestBody: { values: [['timestamp', 'userId', 'displayName', 'messageId', 'quotedMessageId', 'role', 'content', 'fileUrl', 'reply']] },
       });
 
       console.log(`新冊作成: LINE会話履歴_${bookNum} (${targetSheetId})`);
@@ -489,8 +489,8 @@ async function registerCustomer(userId, displayName) {
 }
 
 // 履歴書き込みキューに追加
-function queueHistoryWrite(userId, displayName, messageId, quotedMessageId, role, content, fileUrl = '') {
-  historyWriteQueue.push({ userId, displayName, messageId, quotedMessageId, role, content, fileUrl, timestamp: new Date().toISOString() });
+function queueHistoryWrite(userId, displayName, messageId, quotedMessageId, role, content, fileUrl = '', reply = '') {
+  historyWriteQueue.push({ userId, displayName, messageId, quotedMessageId, role, content, fileUrl, reply, timestamp: new Date().toISOString() });
   if (!historyQueueTimer) {
     historyQueueTimer = setTimeout(flushHistoryQueue, 3000);
   }
@@ -518,7 +518,7 @@ async function flushHistoryQueue() {
     groups.get(entry.sheetId).push([
       item.timestamp, item.userId, item.displayName,
       item.messageId || '', item.quotedMessageId || '',
-      item.role, item.content, item.fileUrl,
+      item.role, item.content, item.fileUrl, item.reply || '',
     ]);
   }
 
@@ -527,7 +527,7 @@ async function flushHistoryQueue() {
     try {
       await sheets.spreadsheets.values.append({
         spreadsheetId: sheetId,
-        range: 'LOG!A:H',
+        range: 'LOG!A:I',
         valueInputOption: 'RAW',
         requestBody: { values: rows },
       });
@@ -553,7 +553,7 @@ async function resolveQuotedMessage(userId, quotedMessageId) {
     const sheets = getSheetsClient();
     const res = await sheets.spreadsheets.values.get({
       spreadsheetId: entry.sheetId,
-      range: 'LOG!A:H',
+      range: 'LOG!A:I',
     });
     const rows = res.data.values || [];
     const row = rows.find(r => r[3] === quotedMessageId);
@@ -2108,7 +2108,13 @@ app.post('/webhook',
               if (event.message.type === 'text') {
                 // テキストをMapに保存 + 履歴キューに追加
                 messageTextMap.set(event.message.id, event.message.text);
-                queueHistoryWrite(userId, user.displayName, event.message.id, quotedMessageId, 'user', event.message.text);
+                // リプライ内容を解決してからキューに追加
+                let replyContent = '';
+                if (quotedMessageId) {
+                  const quoted = await resolveQuotedMessage(userId, quotedMessageId);
+                  replyContent = quoted?.value || '（内容不明）';
+                }
+                queueHistoryWrite(userId, user.displayName, event.message.id, quotedMessageId, 'user', event.message.text, '', replyContent);
                 await forwardToSlack(userId, event.message.text, quotedMessageId);
               } else if (event.message.type === 'image') {
                 const messageId = event.message.id;
@@ -2256,7 +2262,13 @@ app.post('/webhook',
         // テキストをMapに保存 + 履歴キューに追加
         messageTextMap.set(event.message.id, userMessage);
         const quotedMsgId = event.message.quotedMessageId || event.message.quoted?.messageId || null;
-        queueHistoryWrite(userId, user.displayName, event.message.id, quotedMsgId, 'user', userMessage);
+        // リプライ内容を解決してキューに追加
+        let replyContent = '';
+        if (quotedMsgId) {
+          const quoted = await resolveQuotedMessage(userId, quotedMsgId);
+          replyContent = quoted?.value || '（内容不明）';
+        }
+        queueHistoryWrite(userId, user.displayName, event.message.id, quotedMsgId, 'user', userMessage, '', replyContent);
 
         // pendingHandoff 中の処理（厳格化）
         if (user.pendingHandoff) {
