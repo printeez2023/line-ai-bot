@@ -383,6 +383,40 @@ async function resolveShortUrl(shortId) {
   }
 }
 
+// 固定IDで短縮URLを登録（起動時に呼ぶ）
+async function registerFixedShortUrl(shortId, targetUrl) {
+  try {
+    const sheets = getSheetsClient();
+    const res = await sheets.spreadsheets.values.get({
+      spreadsheetId: GOOGLE_SHEETS_ID,
+      range: 'シート1!A:B',
+    });
+    const rows = res.data.values || [];
+    const existing = rows.findIndex(r => r[0] === shortId);
+
+    if (existing >= 0) {
+      // 既存行を上書き
+      await sheets.spreadsheets.values.update({
+        spreadsheetId: GOOGLE_SHEETS_ID,
+        range: `シート1!A${existing + 1}:C${existing + 1}`,
+        valueInputOption: 'RAW',
+        requestBody: { values: [[shortId, targetUrl, new Date().toISOString()]] },
+      });
+    } else {
+      // 新規追加
+      await sheets.spreadsheets.values.append({
+        spreadsheetId: GOOGLE_SHEETS_ID,
+        range: 'シート1!A:C',
+        valueInputOption: 'RAW',
+        requestBody: { values: [[shortId, targetUrl, new Date().toISOString()]] },
+      });
+    }
+    console.log(`固定短縮URL登録: /f/${shortId} → ${targetUrl}`);
+  } catch (e) {
+    console.error('固定短縮URL登録エラー:', e.message);
+  }
+}
+
 // ===== 会話履歴システム =====
 const LINE_HISTORY_FOLDER_ID = process.env.LINE_HISTORY_FOLDER_ID;
 const LINE_HISTORY_INDEX_ID  = process.env.LINE_HISTORY_INDEX_ID;
@@ -1592,6 +1626,16 @@ AI・PSD・PNG・JPEG・PDFなどに対応。
 ・電話対応不可
 ・領収書：アカウント画面のご注文詳細からダウンロード
 ・大口注文（数百〜数千枚）：contact@printeez.jp へ
+
+【目的別固定返答ルール】
+以下の意図が文脈から読み取れた場合、必ず以下の固定文をそのまま返すこと。キーワードの単純マッチではなく、会話の流れから「テンプレート・版下・デザイン雛形を求めている」と判断できる場合に適用する。
+※「版」「型」単体の言及は判定に含めない。
+
+■ テンプレート・版下・デザイン雛形を求めている場合：
+テンプレートはこちらからダウンロードいただけます📁
+https://api.printeez.jp/f/template
+
+お探しのものと違いましたか？その場合はお気軽にお知らせください😊
 `;
 
 // ===== [修正③] 見積もり検証用システムプロンプト =====
@@ -3016,4 +3060,6 @@ app.listen(PORT, () => {
   console.log(`サーバー起動中: port ${PORT}`);
   joinStaffChannel();
   restoreHistoryOnStartup();
+  // 固定短縮URLを起動時に登録
+  registerFixedShortUrl('template', 'https://drive.google.com/drive/folders/1C_dGPeL7qQR12HHzgYGGfa-tVEos1GRv');
 });
