@@ -322,16 +322,66 @@ function findLineUserBySlackChannel(channelId) {
 
 // ===== Google Drive =====
 const GOOGLE_DRIVE_FOLDER_ID = process.env.GOOGLE_DRIVE_FOLDER_ID;
+const GOOGLE_SHEETS_ID = process.env.GOOGLE_SHEETS_ID;
 
-function getDriveClient() {
+function getGoogleAuth() {
   const auth = new google.auth.OAuth2(
     process.env.GOOGLE_CLIENT_ID,
     process.env.GOOGLE_CLIENT_SECRET,
   );
-  auth.setCredentials({
-    refresh_token: process.env.GOOGLE_REFRESH_TOKEN,
-  });
-  return google.drive({ version: 'v3', auth });
+  auth.setCredentials({ refresh_token: process.env.GOOGLE_REFRESH_TOKEN });
+  return auth;
+}
+
+function getDriveClient() {
+  return google.drive({ version: 'v3', auth: getGoogleAuth() });
+}
+
+function getSheetsClient() {
+  return google.sheets({ version: 'v4', auth: getGoogleAuth() });
+}
+
+// 短縮ID生成（6文字英数字）
+function generateShortId() {
+  return Math.random().toString(36).slice(2, 8);
+}
+
+// ShopifyURLをSheetsに保存して短縮URLを返す
+async function saveShortUrl(shopifyUrl) {
+  try {
+    const sheets = getSheetsClient();
+    const shortId = generateShortId();
+    const now = new Date().toISOString();
+    await sheets.spreadsheets.values.append({
+      spreadsheetId: GOOGLE_SHEETS_ID,
+      range: 'Sheet1!A:C',
+      valueInputOption: 'RAW',
+      requestBody: { values: [[shortId, shopifyUrl, now]] },
+    });
+    const shortUrl = `https://api.printeez.jp/f/${shortId}`;
+    console.log(`短縮URL作成: ${shortId} → ${shopifyUrl}`);
+    return shortUrl;
+  } catch (e) {
+    console.error('短縮URL保存エラー:', e.message);
+    return shopifyUrl; // 失敗時は元URLをそのまま返す
+  }
+}
+
+// 短縮IDからShopify URLを解決
+async function resolveShortUrl(shortId) {
+  try {
+    const sheets = getSheetsClient();
+    const res = await sheets.spreadsheets.values.get({
+      spreadsheetId: GOOGLE_SHEETS_ID,
+      range: 'Sheet1!A:B',
+    });
+    const rows = res.data.values || [];
+    const row = rows.find(r => r[0] === shortId);
+    return row ? row[1] : null;
+  } catch (e) {
+    console.error('短縮URL解決エラー:', e.message);
+    return null;
+  }
 }
 
 // 顧客フォルダ（なければ作成）を取得
@@ -2374,7 +2424,9 @@ async function uploadToShopifyCDN(buffer, fileName, mimeType) {
       }
       if (url && fileStatus === 'READY') {
         console.log(`ShopifyCDNアップロード完了: ${url}`);
-        return url;
+        // 短縮URLに変換して返す
+        const shortUrl = await saveShortUrl(url);
+        return shortUrl;
       }
     }
 
@@ -2386,6 +2438,17 @@ async function uploadToShopifyCDN(buffer, fileName, mimeType) {
     return null;
   }
 }
+
+// ===== 短縮URLリダイレクト =====
+app.get('/f/:shortId', async (req, res) => {
+  const { shortId } = req.params;
+  const shopifyUrl = await resolveShortUrl(shortId);
+  if (shopifyUrl) {
+    res.redirect(302, shopifyUrl);
+  } else {
+    res.status(404).send('URLが見つかりません');
+  }
+});
 
 // ===== Slack → LINE 返信エンドポイント =====
 app.post('/slack/events', express.json(), async (req, res) => {
