@@ -2274,32 +2274,15 @@ async function uploadToShopifyCDN(buffer, fileName, mimeType) {
       return null;
     }
 
-    // Step1レスポンスをログ（デバッグ用）
-    console.log(`ShopifyStep1 url=${target.url} params=${JSON.stringify(target.parameters)}`);
-
-    // Step 2: 署名付きURLにファイルをアップロード
-    // parametersのhttpMethodヒントを使い、画像はFormData、ファイルはPUT raw bytes
-    let uploadRes;
-    if (mimeType.startsWith('image/')) {
-      const nativeForm = new globalThis.FormData();
-      for (const param of target.parameters) {
-        nativeForm.append(param.name, param.value);
-      }
-      nativeForm.append('file', new Blob([buffer], { type: mimeType }), fileName);
-      uploadRes = await fetch(target.url, { method: 'POST', body: nativeForm });
-    } else {
-      // ファイルはraw bytesでPUT送信
-      const headers = { 'Content-Type': mimeType };
-      // parametersにContent-Typeがあれば上書き
-      for (const param of target.parameters) {
-        if (param.name.toLowerCase() === 'content-type') headers['Content-Type'] = param.value;
-      }
-      uploadRes = await fetch(target.url, {
-        method: 'PUT',
-        headers,
-        body: buffer,
-      });
+    // Step 2: 署名付きURLにPOST FormDataでアップロード（画像・ファイル共通）
+    // parametersをすべてFormDataフィールドとして追加し、最後にfileを追加
+    const nativeForm = new globalThis.FormData();
+    for (const param of target.parameters) {
+      nativeForm.append(param.name, param.value);
     }
+    nativeForm.append('file', new Blob([buffer], { type: mimeType }), fileName);
+
+    const uploadRes = await fetch(target.url, { method: 'POST', body: nativeForm });
     console.log(`ShopifyStep2ステータス: ${uploadRes.status}`);
     if (!uploadRes.ok) {
       const errText = await uploadRes.text();
