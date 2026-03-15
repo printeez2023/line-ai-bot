@@ -2201,6 +2201,7 @@ async function uploadToShopifyCDN(buffer, fileName, mimeType) {
       body: JSON.stringify({ query, variables }),
     });
     const data = await res.json();
+    console.log('ShopifyCDNレスポンス:', JSON.stringify(data?.data?.fileCreate || data?.errors || data));
 
     const errors = data?.data?.fileCreate?.userErrors;
     if (errors && errors.length > 0) {
