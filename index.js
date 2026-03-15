@@ -297,12 +297,11 @@ async function forwardToSlack(userId, message, quotedMessageId = null) {
   // リプライ情報を解決
   let replyLine = '';
   if (quotedMessageId) {
-    const quotedUrl = messageUrlMap.get(quotedMessageId);
-    const quotedText = messageTextMap.get(quotedMessageId);
-    if (quotedUrl) {
-      replyLine = `↩️ 返信先: ${quotedUrl}\n`;
-    } else if (quotedText) {
-      replyLine = `↩️ 返信先: 「${quotedText.slice(0, 50)}${quotedText.length > 50 ? '…' : ''}」\n`;
+    const quoted = await resolveQuotedMessage(userId, quotedMessageId);
+    if (quoted?.type === 'url') {
+      replyLine = `↩️ 返信先: ${quoted.value}\n`;
+    } else if (quoted?.type === 'text') {
+      replyLine = `↩️ 返信先: 「${quoted.value.slice(0, 50)}${quoted.value.length > 50 ? '…' : ''}」\n`;
     } else {
       replyLine = `↩️ 返信先: （内容不明）\n`;
     }
@@ -354,7 +353,7 @@ async function saveShortUrl(shopifyUrl) {
     const now = new Date().toISOString();
     await sheets.spreadsheets.values.append({
       spreadsheetId: GOOGLE_SHEETS_ID,
-      range: 'Sheet1!A:C',
+      range: 'シート1!A:C',
       valueInputOption: 'RAW',
       requestBody: { values: [[shortId, shopifyUrl, now]] },
     });
@@ -373,13 +372,197 @@ async function resolveShortUrl(shortId) {
     const sheets = getSheetsClient();
     const res = await sheets.spreadsheets.values.get({
       spreadsheetId: GOOGLE_SHEETS_ID,
-      range: 'Sheet1!A:B',
+      range: 'シート1!A:B',
     });
     const rows = res.data.values || [];
     const row = rows.find(r => r[0] === shortId);
     return row ? row[1] : null;
   } catch (e) {
     console.error('短縮URL解決エラー:', e.message);
+    return null;
+  }
+}
+
+// ===== 会話履歴システム =====
+const LINE_HISTORY_FOLDER_ID = process.env.LINE_HISTORY_FOLDER_ID;
+const LINE_HISTORY_INDEX_ID  = process.env.LINE_HISTORY_INDEX_ID;
+
+// インメモリキャッシュ
+const historyIndexCache = new Map(); // userId → { sheetId, rowIndex }
+const historyWriteQueue = [];        // 書き込みキュー
+let historyQueueTimer = null;
+
+// INDEXから顧客を検索
+async function findCustomerInIndex(userId) {
+  if (historyIndexCache.has(userId)) return historyIndexCache.get(userId);
+  try {
+    const sheets = getSheetsClient();
+    const res = await sheets.spreadsheets.values.get({
+      spreadsheetId: LINE_HISTORY_INDEX_ID,
+      range: 'シート1!A:D',
+    });
+    const rows = res.data.values || [];
+    const row = rows.find(r => r[0] === userId);
+    if (row) {
+      const entry = { sheetId: row[2], displayName: row[1] };
+      historyIndexCache.set(userId, entry);
+      return entry;
+    }
+    return null;
+  } catch (e) {
+    console.error('INDEX検索エラー:', e.message);
+    return null;
+  }
+}
+
+// 新規顧客をINDEXに登録・シートに追加
+async function registerCustomer(userId, displayName) {
+  try {
+    const sheets = getSheetsClient();
+    const drive  = getDriveClient();
+
+    // 最新冊を確認（A列の最後のスプレッドシートIDを取得）
+    const idxRes = await sheets.spreadsheets.values.get({
+      spreadsheetId: LINE_HISTORY_INDEX_ID,
+      range: 'シート1!A:D',
+    });
+    const rows = (idxRes.data.values || []).filter(r => r[0] && r[0] !== 'userId');
+
+    // 最新冊のシートIDを取得（D列に冊ID保存）
+    let targetSheetId = null;
+    if (rows.length > 0) {
+      // 最後の行の冊IDを確認
+      const lastSheetId = rows[rows.length - 1][2];
+      // 同じsheetIdの行数をカウント
+      const count = rows.filter(r => r[2] === lastSheetId).length;
+      if (count < 100) {
+        targetSheetId = lastSheetId;
+      }
+    }
+
+    // 100人超えまたは初回 → 新冊作成
+    if (!targetSheetId) {
+      const bookNum = String(Math.floor(rows.length / 100) + 1).padStart(3, '0');
+      const newSheet = await sheets.spreadsheets.create({
+        requestBody: {
+          properties: { title: `LINE会話履歴_${bookNum}` },
+          sheets: [{ properties: { title: 'LOG' } }],
+        },
+      });
+      targetSheetId = newSheet.data.spreadsheetId;
+
+      // Driveのフォルダに移動
+      await drive.files.update({
+        fileId: targetSheetId,
+        addParents: LINE_HISTORY_FOLDER_ID,
+        removeParents: 'root',
+        fields: 'id, parents',
+      });
+
+      // ヘッダー行追加
+      await sheets.spreadsheets.values.append({
+        spreadsheetId: targetSheetId,
+        range: 'LOG!A:H',
+        valueInputOption: 'RAW',
+        requestBody: { values: [['timestamp', 'userId', 'displayName', 'messageId', 'quotedMessageId', 'role', 'content', 'fileUrl']] },
+      });
+
+      console.log(`新冊作成: LINE会話履歴_${bookNum} (${targetSheetId})`);
+    }
+
+    // INDEXに追記
+    await sheets.spreadsheets.values.append({
+      spreadsheetId: LINE_HISTORY_INDEX_ID,
+      range: 'シート1!A:D',
+      valueInputOption: 'RAW',
+      requestBody: { values: [[userId, displayName, targetSheetId, new Date().toISOString()]] },
+    });
+
+    const entry = { sheetId: targetSheetId, displayName };
+    historyIndexCache.set(userId, entry);
+    console.log(`顧客登録: ${displayName} (${userId}) → ${targetSheetId}`);
+    return entry;
+  } catch (e) {
+    console.error('顧客登録エラー:', e.message);
+    return null;
+  }
+}
+
+// 履歴書き込みキューに追加
+function queueHistoryWrite(userId, displayName, messageId, quotedMessageId, role, content, fileUrl = '') {
+  historyWriteQueue.push({ userId, displayName, messageId, quotedMessageId, role, content, fileUrl, timestamp: new Date().toISOString() });
+  if (!historyQueueTimer) {
+    historyQueueTimer = setTimeout(flushHistoryQueue, 3000);
+  }
+}
+
+// キューをバッチ送信
+async function flushHistoryQueue() {
+  historyQueueTimer = null;
+  if (historyWriteQueue.length === 0) return;
+
+  const batch = historyWriteQueue.splice(0, historyWriteQueue.length);
+
+  // sheetId別にグループ化
+  const groups = new Map();
+  for (const item of batch) {
+    let entry = historyIndexCache.get(item.userId);
+    if (!entry) {
+      entry = await findCustomerInIndex(item.userId);
+      if (!entry) {
+        entry = await registerCustomer(item.userId, item.displayName);
+      }
+    }
+    if (!entry) continue;
+    if (!groups.has(entry.sheetId)) groups.set(entry.sheetId, []);
+    groups.get(entry.sheetId).push([
+      item.timestamp, item.userId, item.displayName,
+      item.messageId || '', item.quotedMessageId || '',
+      item.role, item.content, item.fileUrl,
+    ]);
+  }
+
+  const sheets = getSheetsClient();
+  for (const [sheetId, rows] of groups) {
+    try {
+      await sheets.spreadsheets.values.append({
+        spreadsheetId: sheetId,
+        range: 'LOG!A:H',
+        valueInputOption: 'RAW',
+        requestBody: { values: rows },
+      });
+      console.log(`履歴書き込み完了: ${rows.length}件 → ${sheetId}`);
+    } catch (e) {
+      console.error(`履歴書き込みエラー(${sheetId}):`, e.message);
+    }
+  }
+}
+
+// quotedMessageIdからシートで引用元を検索
+async function resolveQuotedMessage(userId, quotedMessageId) {
+  // まずインメモリMapを確認
+  const cachedUrl  = messageUrlMap.get(quotedMessageId);
+  const cachedText = messageTextMap.get(quotedMessageId);
+  if (cachedUrl)  return { type: 'url',  value: cachedUrl };
+  if (cachedText) return { type: 'text', value: cachedText };
+
+  // Sheetsから検索
+  try {
+    const entry = historyIndexCache.get(userId) || await findCustomerInIndex(userId);
+    if (!entry) return null;
+    const sheets = getSheetsClient();
+    const res = await sheets.spreadsheets.values.get({
+      spreadsheetId: entry.sheetId,
+      range: 'LOG!A:H',
+    });
+    const rows = res.data.values || [];
+    const row = rows.find(r => r[3] === quotedMessageId);
+    if (!row) return null;
+    if (row[7]) return { type: 'url',  value: row[7] }; // fileUrl
+    if (row[6]) return { type: 'text', value: row[6] }; // content
+    return null;
+  } catch (e) {
+    console.error('引用元検索エラー:', e.message);
     return null;
   }
 }
@@ -500,8 +683,9 @@ async function uploadLineContentToDrive(userId, messageId, fileName, mimeType) {
       await uploadFileToSlack(user.slackChannelId, buffer, name, mimeType, `👤 *${displayName}* がファイルを送信しました\n📁 Drive: ${link}`);
     }
 
-    // メッセージIDとDrive URLを保存（リプライ解決用）
+    // メッセージIDとDrive URLを保存（リプライ解決用）+ 履歴キューに追加
     messageUrlMap.set(messageId, link);
+    queueHistoryWrite(userId, displayName, messageId, null, 'user', fileName, link);
 
     return { name, link };
   } catch (e) {
@@ -1447,27 +1631,30 @@ async function generateSummary(userId) {
 
 // ===== pre-handoff メッセージを送り、pendingHandoff 状態にする =====
 // ===== LINEメッセージ送信ラッパー（送信したメッセージIDをMapに保存）=====
-async function replyAndSave(replyToken, messages) {
+async function replyAndSave(replyToken, messages, userId = null, displayName = null) {
   const msgArray = Array.isArray(messages) ? messages : [messages];
   const res = await client.replyMessage({ replyToken, messages: msgArray });
-  // sentMessagesのIDとテキストをMapに保存
   if (res?.sentMessages) {
     res.sentMessages.forEach((sent, i) => {
       if (sent.id && msgArray[i]?.text) {
         messageTextMap.set(sent.id, msgArray[i].text);
+        if (userId) {
+          queueHistoryWrite(userId, displayName, sent.id, null, 'bot', msgArray[i].text);
+        }
       }
     });
   }
   return res;
 }
 
-async function pushAndSave(userId, messages) {
+async function pushAndSave(userId, messages, displayName = null) {
   const msgArray = Array.isArray(messages) ? messages : [messages];
   const res = await client.pushMessage({ to: userId, messages: msgArray });
   if (res?.sentMessages) {
     res.sentMessages.forEach((sent, i) => {
       if (sent.id && msgArray[i]?.text) {
         messageTextMap.set(sent.id, msgArray[i].text);
+        queueHistoryWrite(userId, displayName, sent.id, null, 'bot', msgArray[i].text);
       }
     });
   }
@@ -1919,8 +2106,9 @@ app.post('/webhook',
                 || null;
               if (quotedMessageId) console.log(`[${userId}] リプライ検出: quotedMessageId=${quotedMessageId}`);
               if (event.message.type === 'text') {
-                // テキストをMapに保存
+                // テキストをMapに保存 + 履歴キューに追加
                 messageTextMap.set(event.message.id, event.message.text);
+                queueHistoryWrite(userId, user.displayName, event.message.id, quotedMessageId, 'user', event.message.text);
                 await forwardToSlack(userId, event.message.text, quotedMessageId);
               } else if (event.message.type === 'image') {
                 const messageId = event.message.id;
@@ -2065,8 +2253,10 @@ app.post('/webhook',
         if (event.type !== 'message' || event.message.type !== 'text') continue;
 
         const userMessage = event.message.text;
-        // テキストをMapに保存（リプライ解決用）
+        // テキストをMapに保存 + 履歴キューに追加
         messageTextMap.set(event.message.id, userMessage);
+        const quotedMsgId = event.message.quotedMessageId || event.message.quoted?.messageId || null;
+        queueHistoryWrite(userId, user.displayName, event.message.id, quotedMsgId, 'user', userMessage);
 
         // pendingHandoff 中の処理（厳格化）
         if (user.pendingHandoff) {
