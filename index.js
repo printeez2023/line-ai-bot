@@ -322,7 +322,7 @@ function getDriveClient() {
 // 顧客フォルダ（なければ作成）を取得
 async function getOrCreateCustomerFolder(displayName) {
   const drive = getDriveClient();
-  const folderName = displayName || 'unknown';
+  const folderName = `${displayName || 'unknown'}_line`;
 
   // 既存フォルダを検索
   const res = await drive.files.list({
