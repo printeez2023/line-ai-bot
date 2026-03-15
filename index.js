@@ -253,8 +253,8 @@ async function notifySlack(userId, summary) {
 
   const isRepeat = user.notifiedOnce === true;
   const text = isRepeat
-    ? `🔁 *再度スタッフ対応リクエスト*\n\n${summary}\n\n_返信は \`@LINE CS Bot メッセージ\` の形式で送ってください_`
-    : `🔔 *スタッフ対応リクエスト*\n顧客名: *${user.displayName}*\nLINE ID: \`${userId}\`\n\n${summary}\n\n_返信は \`@LINE CS Bot メッセージ\` の形式で送ってください_`;
+    ? `🔁 *再度スタッフ対応リクエスト*\n顧客名: *${user.displayName}*\nLINE ID: \`${userId}\`\n\n_返信は \`@LINE CS Bot メッセージ\` の形式で送ってください_`
+    : `🔔 *スタッフ対応リクエスト*\n顧客名: *${user.displayName}*\nLINE ID: \`${userId}\`\n\n_返信は \`@LINE CS Bot メッセージ\` の形式で送ってください_`;
 
   await sendToSlack(channelId, text);
   user.notifiedOnce = true;
@@ -1380,7 +1380,6 @@ async function sendPreHandoffMessage(userId, replyToken, summary, triggerType) {
   user.pendingHandoff = true;
 
   const baseText =
-    `内容をまとめますね😊\n\n${summary}\n\n` +
     `このままスタッフに変わりますので少々お待ちください。\n` +
     `他にご不明点はございますか？`;
 
