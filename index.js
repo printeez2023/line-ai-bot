@@ -310,7 +310,7 @@ async function forwardToSlack(userId, message) {
   }
 
   console.log(`[${userId}] Slack転送実行: ${message}`);
-  await sendToSlack(user.slackChannelId, `👤 *${user.displayName || userId}*\n${message}`, user.slackThreadTs);
+  await sendToSlack(user.slackChannelId, `👤 *${user.displayName || userId}*\n<!channel> ${message}`, user.slackThreadTs);
 }
 
 // SlackユーザーIDからLINEユーザーIDを逆引き
