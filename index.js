@@ -446,13 +446,14 @@ async function uploadLineContentToDrive(userId, messageId, fileName, mimeType) {
 async function uploadFileToSlack(channelId, buffer, fileName, mimeType, initialComment = '') {
   try {
     // Step 1: アップロードURLを取得
+    const params = new URLSearchParams({ filename: fileName, length: String(buffer.byteLength) });
     const urlRes = await fetch('https://slack.com/api/files.getUploadURLExternal', {
       method: 'POST',
       headers: {
-        'Content-Type': 'application/json',
+        'Content-Type': 'application/x-www-form-urlencoded',
         Authorization: `Bearer ${SLACK_BOT_TOKEN}`,
       },
-      body: JSON.stringify({ filename: fileName, length: buffer.byteLength }),
+      body: params.toString(),
     });
     const urlData = await urlRes.json();
     if (!urlData.ok) {
