@@ -29,6 +29,27 @@ const SHOPIFY_API_VERSION  = '2025-01';
 const SLACK_BOT_TOKEN     = process.env.SLACK_BOT_TOKEN;
 const SLACK_SIGNING_SECRET = process.env.SLACK_SIGNING_SECRET;
 
+// 起動時にBotのユーザーIDを自動取得
+let slackBotUserId = null;
+async function initSlackBotUserId() {
+  try {
+    const res = await fetch('https://slack.com/api/auth.test', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${SLACK_BOT_TOKEN}` },
+    });
+    const data = await res.json();
+    if (data.ok) {
+      slackBotUserId = data.user_id;
+      console.log(`SlackBotユーザーID取得: ${slackBotUserId}`);
+    } else {
+      console.error('SlackBotユーザーID取得失敗:', data.error);
+    }
+  } catch (e) {
+    console.error('SlackBotユーザーID取得エラー:', e.message);
+  }
+}
+initSlackBotUserId();
+
 // チャンネル名に使えない文字を除去
 function sanitizeChannelName(name) {
   return name
@@ -110,14 +131,18 @@ async function getOrCreateSlackChannel(userId, displayName) {
     console.log(`[${userId}] Slackチャンネル新規作成: ${channelName} (${channelId})`);
 
     // チャンネルにBotを招待
-    await fetch('https://slack.com/api/conversations.invite', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${SLACK_BOT_TOKEN}`,
-      },
-      body: JSON.stringify({ channel: channelId, users: '' }),
-    });
+    if (slackBotUserId) {
+      const inviteRes = await fetch('https://slack.com/api/conversations.invite', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${SLACK_BOT_TOKEN}`,
+        },
+        body: JSON.stringify({ channel: channelId, users: slackBotUserId }),
+      });
+      const inviteData = await inviteRes.json();
+      if (!inviteData.ok) console.error('Bot招待失敗:', inviteData.error);
+    }
 
     // トピックにLINEユーザーIDを設定
     await fetch('https://slack.com/api/conversations.setTopic', {
