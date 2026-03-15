@@ -2325,7 +2325,7 @@ app.post('/slack/events', express.json(), async (req, res) => {
   if (body.event && body.event.type === 'app_mention') {
     const event = body.event;
     const channelId = event.channel;
-    const text = event.text.replace(/<@[^>]+>/g, '').trim(); // メンション部分を除去
+    const text = event.text.replace(/<@[^>]+>/g, '').trim();
 
     // チャンネルIDからLINEユーザーIDを逆引き
     const lineUserId = findLineUserBySlackChannel(channelId);
@@ -2335,26 +2335,25 @@ app.post('/slack/events', express.json(), async (req, res) => {
       return;
     }
 
-    // 画像添付がある場合
+    const messages = [];
+
+    // 画像URLを全部先に取得
     if (event.files && event.files.length > 0) {
       for (const file of event.files) {
         if (file.mimetype && file.mimetype.startsWith('image/')) {
           try {
-            // Slackから画像をダウンロード
             const imgRes = await fetch(file.url_private, {
               headers: { Authorization: `Bearer ${SLACK_BOT_TOKEN}` },
             });
             const buffer = Buffer.from(await imgRes.arrayBuffer());
-
-            // Shopify CDNにアップして公開URLを取得
             const imageUrl = await uploadToShopifyCDN(buffer, file.name, file.mimetype);
             if (imageUrl) {
-              await client.pushMessage(lineUserId, {
+              messages.push({
                 type: 'image',
                 originalContentUrl: imageUrl,
                 previewImageUrl: imageUrl,
               });
-              console.log(`[${lineUserId}] Slack→LINE画像転送: ${file.name}`);
+              console.log(`[${lineUserId}] 画像URL取得: ${file.name}`);
             } else {
               await sendToSlack(channelId, `⚠️ 画像のCDNアップロード失敗: ${file.name}`);
             }
@@ -2366,16 +2365,18 @@ app.post('/slack/events', express.json(), async (req, res) => {
       }
     }
 
-    // テキストがある場合
+    // テキストがあれば追加
     if (text) {
+      messages.push({ type: 'text', text });
+    }
+
+    // まとめて1回送信
+    if (messages.length > 0) {
       try {
-        await client.pushMessage(lineUserId, {
-          type: 'text',
-          text,
-        });
-        console.log(`[${lineUserId}] Slack→LINE転送: ${text}`);
+        await client.pushMessage(lineUserId, messages);
+        console.log(`[${lineUserId}] Slack→LINE一括送信: ${messages.length}件`);
       } catch (e) {
-        console.error(`LINE送信失敗:`, e.message);
+        console.error('LINE一括送信失敗:', e.message);
         await sendToSlack(channelId, `⚠️ LINE送信失敗: ${e.message}`);
       }
     }
