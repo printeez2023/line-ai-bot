@@ -2167,6 +2167,59 @@ app.get('/debug-estimates', (req, res) => {
   res.json(out);
 });
 
+// ===== Shopify CDN アップロード =====
+async function uploadToShopifyCDN(buffer, fileName, mimeType) {
+  try {
+    const base64 = buffer.toString('base64');
+    const query = `
+      mutation fileCreate($files: [FileCreateInput!]!) {
+        fileCreate(files: $files) {
+          files {
+            ... on MediaImage {
+              image { url }
+            }
+          }
+          userErrors { field message }
+        }
+      }
+    `;
+    const variables = {
+      files: [{
+        filename: fileName,
+        mimeType,
+        resource: 'IMAGE',
+        originalSource: `data:${mimeType};base64,${base64}`,
+      }],
+    };
+
+    const res = await fetch(`https://${SHOPIFY_DOMAIN}/admin/api/${SHOPIFY_API_VERSION}/graphql.json`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Shopify-Access-Token': SHOPIFY_ACCESS_TOKEN,
+      },
+      body: JSON.stringify({ query, variables }),
+    });
+    const data = await res.json();
+
+    const errors = data?.data?.fileCreate?.userErrors;
+    if (errors && errors.length > 0) {
+      console.error('ShopifyCDNアップロードエラー:', JSON.stringify(errors));
+      return null;
+    }
+
+    const url = data?.data?.fileCreate?.files?.[0]?.image?.url;
+    if (url) {
+      console.log(`ShopifyCDNアップロード完了: ${url}`);
+      return url;
+    }
+    return null;
+  } catch (e) {
+    console.error('ShopifyCDNアップロード例外:', e.message);
+    return null;
+  }
+}
+
 // ===== Slack → LINE 返信エンドポイント =====
 app.post('/slack/events', express.json(), async (req, res) => {
   const body = req.body;
@@ -2202,11 +2255,9 @@ app.post('/slack/events', express.json(), async (req, res) => {
               headers: { Authorization: `Bearer ${SLACK_BOT_TOKEN}` },
             });
             const buffer = Buffer.from(await imgRes.arrayBuffer());
-            const base64 = buffer.toString('base64');
 
-            // LINEに画像送信（Base64→Data URIは使えないのでimageUrlが必要）
-            // Slackのpermanent URLを使用
-            const imageUrl = file.permalink_public || file.url_private_download;
+            // Shopify CDNにアップして公開URLを取得
+            const imageUrl = await uploadToShopifyCDN(buffer, file.name, file.mimetype);
             if (imageUrl) {
               await client.pushMessage(lineUserId, {
                 type: 'image',
@@ -2214,6 +2265,8 @@ app.post('/slack/events', express.json(), async (req, res) => {
                 previewImageUrl: imageUrl,
               });
               console.log(`[${lineUserId}] Slack→LINE画像転送: ${file.name}`);
+            } else {
+              await sendToSlack(channelId, `⚠️ 画像のCDNアップロード失敗: ${file.name}`);
             }
           } catch (e) {
             console.error('Slack→LINE画像転送失敗:', e.message);
