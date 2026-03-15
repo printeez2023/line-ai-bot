@@ -1835,7 +1835,11 @@ app.post('/webhook',
             console.log(`[${userId}] スタッフ対応中 → AI完全停止`);
             // スタッフモード中はメッセージをSlackに転送
             if (event.type === 'message') {
-              const quotedMessageId = event.message.quotedMessageId || null;
+              console.log(`[${userId}] message構造:`, JSON.stringify(event.message).slice(0, 300));
+              const quotedMessageId = event.message.quotedMessageId
+                || event.message.quoted?.messageId
+                || null;
+              if (quotedMessageId) console.log(`[${userId}] リプライ検出: quotedMessageId=${quotedMessageId}`);
               if (event.message.type === 'text') {
                 // テキストをMapに保存
                 messageTextMap.set(event.message.id, event.message.text);
