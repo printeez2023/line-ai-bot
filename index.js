@@ -2426,7 +2426,7 @@ async function uploadToShopifyCDN(buffer, fileName, mimeType) {
         console.log(`ShopifyCDNアップロード完了: ${url}`);
         // 短縮URLに変換して返す
         const shortUrl = await saveShortUrl(url);
-        return shortUrl;
+        return { shortUrl, shopifyUrl: url };
       }
     }
 
@@ -2508,27 +2508,31 @@ app.post('/slack/events', express.json(), async (req, res) => {
 
           if (file.mimetype && file.mimetype.startsWith('image/')) {
             // 画像 → Shopify CDNにアップしてLINEに画像送信
-            const imageUrl = await uploadToShopifyCDN(buffer, file.name, file.mimetype);
-            if (imageUrl) {
-              messageUrlMap.set(file.id || file.name, imageUrl);
+            const result = await uploadToShopifyCDN(buffer, file.name, file.mimetype);
+            if (result) {
+              const { shortUrl, shopifyUrl } = result;
+              messageUrlMap.set(file.id || file.name, shortUrl);
               messages.push({
                 type: 'image',
-                originalContentUrl: imageUrl,
-                previewImageUrl: imageUrl,
+                originalContentUrl: shopifyUrl,
+                previewImageUrl: shopifyUrl,
               });
+              await sendToSlack(channelId, `📷 画像送信完了: ${file.name}\nShopify URL: ${shopifyUrl}`);
               console.log(`[${lineUserId}] 画像URL取得: ${file.name}`);
             } else {
               await sendToSlack(channelId, `⚠️ 画像のCDNアップロード失敗: ${file.name}`);
             }
           } else {
             // ファイル → Shopify CDNにアップしてLINEにURLテキストで送信
-            const fileUrl = await uploadToShopifyCDN(buffer, file.name, file.mimetype || 'application/octet-stream');
-            if (fileUrl) {
-              messageUrlMap.set(file.id || file.name, fileUrl);
+            const result = await uploadToShopifyCDN(buffer, file.name, file.mimetype || 'application/octet-stream');
+            if (result) {
+              const { shortUrl, shopifyUrl } = result;
+              messageUrlMap.set(file.id || file.name, shortUrl);
               messages.push({
                 type: 'text',
-                text: ` ファイルは下記リンクよりご確認ください\nファイル名:${file.name}\n${fileUrl}`,
+                text: `📎 ${file.name}\n下記リンクよりご確認ください\n${shortUrl}`,
               });
+              await sendToSlack(channelId, `📎 ファイル送信完了: ${file.name}\nShopify URL: ${shopifyUrl}`);
               console.log(`[${lineUserId}] ファイルURL取得: ${file.name}`);
             } else {
               await sendToSlack(channelId, `⚠️ ファイルのCDNアップロード失敗: ${file.name}`);
