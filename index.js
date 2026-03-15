@@ -2337,7 +2337,12 @@ app.post('/slack/events', express.json(), async (req, res) => {
 
     const messages = [];
 
-    // 画像URLを全部先に取得
+    // テキストを先に追加（Slackと同じ順番）
+    if (text) {
+      messages.push({ type: 'text', text });
+    }
+
+    // 画像URLを取得して後に追加
     if (event.files && event.files.length > 0) {
       for (const file of event.files) {
         if (file.mimetype && file.mimetype.startsWith('image/')) {
@@ -2363,11 +2368,6 @@ app.post('/slack/events', express.json(), async (req, res) => {
           }
         }
       }
-    }
-
-    // テキストがあれば追加
-    if (text) {
-      messages.push({ type: 'text', text });
     }
 
     // まとめて1回送信
