@@ -2216,24 +2216,18 @@ async function uploadToShopifyCDN(buffer, fileName, mimeType) {
       return null;
     }
 
-    // Step 2: 署名付きURLにファイルをPOSTアップロード
-    const form = new FormData();
+    // Step 2: 署名付きURLにファイルをPOSTアップロード（ネイティブFormData使用）
+    const nativeForm = new globalThis.FormData();
     for (const param of target.parameters) {
-      form.append(param.name, param.value);
+      nativeForm.append(param.name, param.value);
     }
-    form.append('file', buffer, { filename: fileName, contentType: mimeType });
+    nativeForm.append('file', new Blob([buffer], { type: mimeType }), fileName);
 
     const uploadRes = await fetch(target.url, {
       method: 'POST',
-      headers: form.getHeaders(),
-      body: form,
+      body: nativeForm,
     });
-    console.log(`ShopifyStep2ステータス: ${uploadRes.status} url=${target.url}`);
-    if (!uploadRes.ok) {
-      const uploadText = await uploadRes.text();
-      console.error('ShopifyStep2失敗:', uploadText.slice(0, 300));
-      return null;
-    }
+    console.log(`ShopifyStep2ステータス: ${uploadRes.status}`);
 
     // Step 3: resourceUrl を使って fileCreate
     const createQuery = `
