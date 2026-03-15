@@ -2234,6 +2234,7 @@ async function uploadToShopifyCDN(buffer, fileName, mimeType) {
       mutation fileCreate($files: [FileCreateInput!]!) {
         fileCreate(files: $files) {
           files {
+            id
             ... on MediaImage {
               image { url }
             }
@@ -2262,18 +2263,44 @@ async function uploadToShopifyCDN(buffer, fileName, mimeType) {
       return null;
     }
 
-    // Shopifyは非同期処理のためURLがすぐ返らない場合があるので少し待つ
-    await new Promise(r => setTimeout(r, 3000));
+    const fileId = createData?.data?.fileCreate?.files?.[0]?.id;
 
-    const url = createData?.data?.fileCreate?.files?.[0]?.image?.url;
-    if (url) {
-      console.log(`ShopifyCDNアップロード完了: ${url}`);
-      return url;
+    // ポーリングでURLが出るまで待つ（最大15秒）
+    const pollQuery = `
+      query getFile($id: ID!) {
+        node(id: $id) {
+          ... on MediaImage {
+            image { url }
+            status
+          }
+        }
+      }
+    `;
+
+    for (let i = 0; i < 5; i++) {
+      await new Promise(r => setTimeout(r, 3000));
+      if (!fileId) break;
+
+      const pollRes = await fetch(`https://${SHOPIFY_DOMAIN}/admin/api/${SHOPIFY_API_VERSION}/graphql.json`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Shopify-Access-Token': SHOPIFY_ACCESS_TOKEN,
+        },
+        body: JSON.stringify({ query: pollQuery, variables: { id: fileId } }),
+      });
+      const pollData = await pollRes.json();
+      const url = pollData?.data?.node?.image?.url;
+      const status = pollData?.data?.node?.status;
+      console.log(`ShopifyポーリングURL: ${url} status: ${status}`);
+      if (url) {
+        console.log(`ShopifyCDNアップロード完了: ${url}`);
+        return url;
+      }
     }
 
-    // URLがまだない場合はresourceUrlをそのまま使う
-    console.log(`ShopifyCDNアップロード完了(resourceUrl): ${target.resourceUrl}`);
-    return target.resourceUrl;
+    console.error('ShopifyCDN URLの取得がタイムアウト');
+    return null;
 
   } catch (e) {
     console.error('ShopifyCDNアップロード例外:', e.message);
