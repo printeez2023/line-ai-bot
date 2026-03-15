@@ -269,6 +269,7 @@ async function notifySlack(userId, summary) {
 // スタッフモード中のメッセージをSlackに転送
 async function forwardToSlack(userId, message) {
   const user = getUser(userId);
+  console.log(`[${userId}] forwardToSlack開始 channelId=${user.slackChannelId} threadTs=${user.slackThreadTs}`);
 
   // slackChannelId がない場合（再起動後など）→ 顧客名からチャンネルを復元
   if (!user.slackChannelId) {
@@ -308,6 +309,7 @@ async function forwardToSlack(userId, message) {
     }
   }
 
+  console.log(`[${userId}] Slack転送実行: ${message}`);
   await sendToSlack(user.slackChannelId, `👤 *${user.displayName || userId}*\n${message}`, user.slackThreadTs);
 }
 
