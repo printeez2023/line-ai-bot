@@ -1632,8 +1632,8 @@ async function generateSummary(userId) {
 // ===== pre-handoff メッセージを送り、pendingHandoff 状態にする =====
 // ===== LINEメッセージ送信ラッパー（送信したメッセージIDをMapに保存）=====
 async function replyAndSave(replyToken, messages, userId = null, displayName = null) {
-  const msgArray = Array.isArray(messages) ? messages : [messages];
-  const res = await client.replyMessage({ replyToken, messages: msgArray });
+  const msgArray = (Array.isArray(messages) ? messages : [messages]).filter(Boolean);
+  const res = await client.replyMessage(replyToken, msgArray);
   if (res?.sentMessages) {
     res.sentMessages.forEach((sent, i) => {
       if (sent.id && msgArray[i]?.text) {
