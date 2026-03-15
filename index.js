@@ -1648,8 +1648,8 @@ async function replyAndSave(replyToken, messages, userId = null, displayName = n
 }
 
 async function pushAndSave(userId, messages, displayName = null) {
-  const msgArray = Array.isArray(messages) ? messages : [messages];
-  const res = await client.pushMessage({ to: userId, messages: msgArray });
+  const msgArray = (Array.isArray(messages) ? messages : [messages]).filter(Boolean);
+  const res = await client.pushMessage(userId, msgArray);
   if (res?.sentMessages) {
     res.sentMessages.forEach((sent, i) => {
       if (sent.id && msgArray[i]?.text) {
@@ -2750,7 +2750,9 @@ app.post('/slack/events', express.json(), async (req, res) => {
     // まとめて1回送信
     if (messages.length > 0) {
       try {
-        await client.pushMessage(lineUserId, messages);
+        const lineUser = users.get(lineUserId);
+        const displayName = lineUser?.displayName || null;
+        await pushAndSave(lineUserId, messages, displayName);
         console.log(`[${lineUserId}] Slack→LINE一括送信: ${messages.length}件`);
       } catch (e) {
         console.error('LINE一括送信失敗:', e.message);
