@@ -520,6 +520,7 @@ async function flushHistoryQueue() {
       item.messageId || '', item.quotedMessageId || '',
       item.role, item.content, item.fileUrl, item.reply || '',
     ]);
+    console.log(`履歴キュー追加: sheetId=${entry.sheetId} role=${item.role} cols=9`);
   }
 
   const sheets = getSheetsClient();
