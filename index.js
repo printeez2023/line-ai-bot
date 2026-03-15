@@ -1381,6 +1381,7 @@ async function sendPreHandoffMessage(userId, replyToken, summary, triggerType) {
 
   const baseText =
     `このままスタッフに変わりますので少々お待ちください。\n` +
+    `スタッフにお伝えしたいことがあれば、概要を教えてください。\n` +
     `他にご不明点はございますか？`;
 
   await client.replyMessage(replyToken, {
